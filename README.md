@@ -39,6 +39,28 @@ frame timestamps:
 python3 track_ball.py --video shot.mp4 --display --jsonl replay.jsonl
 ```
 
+## Record test clips on the Pi
+
+With the USB camera plugged in and no other program using it, run:
+
+```bash
+python3 record_camera.py --device /dev/video0 --width 1280 --height 800 --fps 60
+```
+
+Press **Enter** to start a clip and **Enter** again to stop it. Repeat for more
+clips; type **q** and press Enter (or use Ctrl+C) to quit. Add `--preview` for a
+local camera window, where **r** starts/stops and **q** quits. The preview needs
+a desktop session, so omit it over a normal SSH terminal. The actual camera
+mode is printed at startup; choose a mode advertised by
+`v4l2-ctl -d /dev/video0 --list-formats-ext` if it differs from the request.
+
+Each clip goes into `recordings/` as a MJPG `.avi` file, a `.csv` with one
+timestamp per frame, and a `.json` with the camera settings and captured frame
+rate. The timestamps are taken when OpenCV finishes reading each frame, not at
+exposure. Video playback uses the fixed frame rate stored in the AVI; use the
+CSV when checking capture timing or dropped/irregular frames. Replay a clip
+with `python3 track_ball.py --video recordings/<clip>.avi --display`.
+
 `--camera-id` labels output rows (default `left`). `--difference-threshold`,
 `--min-area`, and `--max-area` control candidate segmentation. The defaults
 are starting values, **not calibrated thresholds for an 11 m shot**.
