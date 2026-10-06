@@ -19,7 +19,8 @@ import numpy as np
 from camera_stream import Handler
 from robokeeper import AppearanceBallSegmenter, BallTracker, HybridBallSegmenter, MotionBallSegmenter
 from robokeeper.stereo import LatestPicameraStereo, PreviewBuffer, pair_diagnostics, split_stereo
-from track_ball import LatestCamera, annotate, as_json, load_timestamps, scene_diagnostics
+from track_ball import (LatestCamera, ReviewWriter, annotate, as_json, load_timestamps,
+                        scene_diagnostics)
 
 
 def make_tracker(args):
@@ -65,6 +66,7 @@ def main():
     parser.add_argument("--preview-fps", type=float, default=10)
     parser.add_argument("--jsonl", help="Pair results and timing; '-' writes to stdout")
     parser.add_argument("--timestamps", help="Replay timestamp CSV; auto-loads same-name sidecar")
+    parser.add_argument("--review-video", help="Save a full-resolution annotated MP4 (requires --video)")
     parser.add_argument("--max-frames", type=int)
     parser.add_argument("--duration", type=float, help="Limit live test wall time in seconds")
     args = parser.parse_args()
@@ -83,12 +85,18 @@ def main():
         parser.error("--gain requires --exposure-us")
     if args.exposure_us is not None and args.exposure_us > 1e6/args.fps:
         parser.error("--exposure-us must fit within the requested frame period")
+    if args.review_video and not args.video:
+        parser.error("--review-video requires --video")
+    if args.review_video and Path(args.review_video).suffix.lower() != ".mp4":
+        parser.error("--review-video must end in .mp4")
     if args.video and args.duration:
         parser.error("--duration is for live tests; use --max-frames for replay")
     if args.jsonl and args.jsonl != "-" and args.video:
         inputs = [args.video, args.timestamps or str(Path(args.video).with_suffix(".csv"))]
         if Path(args.jsonl).resolve() in [Path(p).resolve() for p in inputs]:
             parser.error("JSONL output must differ from input files")
+    if args.review_video and Path(args.review_video).resolve() == Path(args.video).resolve():
+        parser.error("Review video must differ from the input video")
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     cv2.setNumThreads(args.opencv_threads)
     trackers = [make_tracker(args), make_tracker(args)]
@@ -100,7 +108,7 @@ def main():
     started_run = last_report = time.monotonic()
     last_preview = 0
     first_timestamp = last_timestamp = None
-    camera = video = preview = None
+    camera = video = preview = review = None
     try:
         with ExitStack() as stack:
             if args.video:
@@ -114,6 +122,8 @@ def main():
                 path = Path(args.timestamps) if args.timestamps else Path(args.video).with_suffix(".csv")
                 timestamps = (load_timestamps(path, round(video.get(cv2.CAP_PROP_FRAME_COUNT)))
                               if path.exists() or args.timestamps else None)
+                if args.review_video:
+                    review = ReviewWriter(args.review_video, fps, (args.eye_width * 2, args.eye_height))
             else:
                 camera = (LatestCamera(args.device, args.eye_width * 2, args.eye_height,
                                        args.fps, args.fourcc) if args.device else
@@ -209,7 +219,7 @@ def main():
                     }, separators=(",", ":")), file=output, flush=True)
                 processed += 1
                 now = time.monotonic()
-                if args.display or (preview and now-last_preview >= 1/args.preview_fps):
+                if args.display or review or (preview and now-last_preview >= 1/args.preview_fps):
                     rendered = []
                     for i, view in enumerate(views):
                         image = view.copy() if view.ndim == 3 else cv2.cvtColor(view, cv2.COLOR_GRAY2BGR)
@@ -222,6 +232,8 @@ def main():
                     shown = np.hstack(rendered)
                     cv2.putText(shown, f"Pair {pair_ms:.1f} ms | skipped {skipped}",
                                 (12, 135), cv2.FONT_HERSHEY_SIMPLEX, .6, (255, 255, 255), 1)
+                    if review:
+                        review.write(shown)
                     # Preview downsampling only; trackers always receive full-resolution eyes.
                     shown = cv2.resize(shown, (1280, max(1, round(shown.shape[0]*1280/shown.shape[1]))))
                     if preview:
@@ -242,6 +254,11 @@ def main():
     finally:
         if args.display:
             cv2.destroyAllWindows()
+        if review:
+            # Free tracker state first so it and ffmpeg are not both resident.
+            trackers.clear()
+            review.close()
+            logging.info("Saved review video: %s", Path(args.review_video).resolve())
         if processed:
             logging.info("Finished: %d pairs; L/R confirmed observations %d/%d; "
                          "both %d; skipped %d; last %d pair processing p50/p95 %.1f/%.1f ms",

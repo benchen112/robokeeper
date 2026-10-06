@@ -1,9 +1,11 @@
+import csv
 import json
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 import types
 import unittest
 from unittest.mock import Mock, patch
@@ -137,6 +139,90 @@ class StereoTests(unittest.TestCase):
             measured = [row for row in rows if row["both_confirmed_observed"]]
             self.assertTrue(measured)
             self.assertAlmostEqual(measured[-1]["raw_disparity_px"], 10, delta=1)
+
+    def test_recorder_remux_keeps_opencv_frame_count_and_rate(self):
+        from record_stereo import encode, remux
+
+        with tempfile.TemporaryDirectory() as directory:
+            mjpg = Path(directory) / "clip.mjpg"
+            avi = Path(directory) / "clip.avi"
+            with open(mjpg, "wb") as stream:
+                for i in range(30):
+                    stream.write(encode(np.full((16, 32), i * 8, np.uint8), 90))
+            remux(mjpg, avi, 60, 30)
+            video = cv2.VideoCapture(str(avi))
+            self.assertEqual(round(video.get(cv2.CAP_PROP_FRAME_COUNT)), 30)
+            self.assertAlmostEqual(video.get(cv2.CAP_PROP_FPS), 60)
+            video.release()
+
+    def test_preview_mp4_keeps_every_frame_when_sensor_span_is_short(self):
+        from record_stereo import make_preview_mp4
+
+        with tempfile.TemporaryDirectory() as directory:
+            avi = Path(directory) / "clip.avi"
+            writer = cv2.VideoWriter(str(avi), cv2.VideoWriter_fourcc(*"MJPG"), 60, (64, 32))
+            for i in range(186):
+                writer.write(np.full((32, 64, 3), i, np.uint8))
+            writer.release()
+            # Real 60 fps sensors run slightly fast; this span once dropped a frame.
+            make_preview_mp4(avi, Path(directory) / "clip.mp4", 60, 186, 3.0815)
+            video = cv2.VideoCapture(str(Path(directory) / "clip.mp4"))
+            self.assertEqual(round(video.get(cv2.CAP_PROP_FRAME_COUNT)), 186)
+            video.release()
+
+    def test_recorder_saves_named_avi_csv_and_mp4_while_preview_runs(self):
+        from record_stereo import StereoRecorder
+
+        class FakeCamera:
+            error = None
+
+            def __init__(self):
+                self.sequence = 0
+
+            def read(self, previous):
+                time.sleep(1 / 120)
+                self.sequence += 1
+                frame = np.full((32, 64), self.sequence % 256, np.uint8)
+                sensor_ns = 1_000_000_000 + self.sequence * 16_666_667
+                return self.sequence, frame, sensor_ns / 1e9, time.monotonic(), {
+                    "sensor_timestamp_ns": sensor_ns, "exposure_us": 1000,
+                    "analogue_gain": 8.0}
+
+        with tempfile.TemporaryDirectory() as directory:
+            args = types.SimpleNamespace(
+                output_dir=Path(directory), preview_fps=30, eye_width=32, eye_height=32,
+                fps=60, quality=90, exposure_us=1000, gain=8.0, encoder_threads=2,
+                keep_mjpg=False)
+            recorder = StereoRecorder(FakeCamera(), args)
+            try:
+                sequence, jpeg, running = recorder.next_preview(0)
+                self.assertTrue(running and jpeg.startswith(b"\xff\xd8"))
+                with self.assertRaises(ValueError):
+                    recorder.start("too early")
+                time.sleep(1.05)
+                started = recorder.start("kick 11m!")
+                self.assertTrue(started["recording"])
+                with self.assertRaises(ValueError):
+                    recorder.start("again")
+                time.sleep(0.4)
+                status = recorder.stop()
+            finally:
+                recorder.close()
+            saved = status["last_saved"]
+            self.assertFalse(status["recording"])
+            self.assertTrue(saved["video"].startswith("kick_11m_"))
+            avi = Path(directory) / saved["video"]
+            mp4 = Path(directory) / saved["preview_mp4"]
+            self.assertEqual(sorted(p.suffix for p in Path(directory).iterdir()),
+                             [".avi", ".csv", ".json", ".mp4"])
+            with open(avi.with_suffix(".csv"), encoding="utf-8") as stream:
+                rows = list(csv.DictReader(stream))
+            self.assertEqual(len(rows), saved["frame_count"])
+            self.assertGreater(len(rows), 10)
+            for path in (avi, mp4):
+                video = cv2.VideoCapture(str(path))
+                self.assertEqual(round(video.get(cv2.CAP_PROP_FRAME_COUNT)), len(rows))
+                video.release()
 
 
 if __name__ == "__main__":

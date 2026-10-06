@@ -168,7 +168,10 @@ class ReviewWriter:
             encoded = Path(stream.name)
         try:
             subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(self.raw_path),
-                            "-c:v", "libx264", "-threads", "2", "-preset", "fast", "-crf", "18",
+                            "-c:v", "libx264", "-threads", "2", "-preset", "veryfast",
+                            # Short lookahead keeps ffmpeg near 290 MB instead of 410 MB
+                            # on 2560x800 stereo clips; the 2 GB Pi froze otherwise.
+                            "-rc-lookahead", "10", "-crf", "18",
                             "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(encoded)], check=True)
             capture = cv2.VideoCapture(str(encoded))
             try:
