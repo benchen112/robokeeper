@@ -1,0 +1,32 @@
+{
+  "2m": {
+    "frames": 321,
+    "source_advertised_frames": 321,
+    "source_decoded_frames": 321,
+    "fps": 60.188,
+    "first_measurement_frame": 110,
+    "observed_frames": 134,
+    "processing_ms_median": 117.8,
+    "processing_ms_p95": 233.8
+  },
+  "5m": {
+    "frames": 432,
+    "source_advertised_frames": 433,
+    "source_decoded_frames": 432,
+    "fps": 60.139,
+    "first_measurement_frame": 88,
+    "observed_frames": 113,
+    "processing_ms_median": 86.2,
+    "processing_ms_p95": 394.1
+  },
+  "11m": {
+    "frames": 401,
+    "source_advertised_frames": 401,
+    "source_decoded_frames": 401,
+    "fps": 60.15,
+    "first_measurement_frame": 148,
+    "observed_frames": 207,
+    "processing_ms_median": 84.9,
+    "processing_ms_p95": 126.5
+  }
+}

@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Robokeeper tracking review</title>
+<style>
+  body { margin: 0 auto; max-width: 1100px; padding: 24px; background: #10151b; color: #e4ecf4; font: 16px/1.5 system-ui, sans-serif; }
+  h1 { font-size: 26px; margin: 0 0 12px; }
+  button { background: #273340; color: inherit; border: 1px solid #536475; border-radius: 6px; padding: 8px 18px; cursor: pointer; margin: 0 8px 10px 0; font: inherit; }
+  button[aria-pressed="true"] { background: #195d8b; border-color: #6bbef6; }
+  video { width: 100%; background: #000; border-radius: 8px; }
+  a { color: #88caf6; }
+  .legend { font-size: 14px; color: #bfccd8; }
+</style>
+<h1>Robokeeper tracking review</h1>
+<p>Full input clips with measured and predicted ball positions. Switch views to compare the overlay with the original at the same playback time.</p>
+<div aria-label="Recording">
+  <button data-distance="2m" aria-pressed="true">2 m</button>
+  <button data-distance="5m" aria-pressed="false">5 m</button>
+  <button data-distance="11m" aria-pressed="false">11 m</button>
+</div>
+<div aria-label="Video view">
+  <button data-view="overlay" aria-pressed="true">Tracking overlay</button>
+  <button data-view="input" aria-pressed="false">Original clip</button>
+</div>
+<video id="player" controls playsinline preload="metadata" src="2m_motion.mp4"></video>
+<p class="legend">Green: measured track · Yellow: brief gap prediction · White: detection · Dashed blue line: estimated floor boundary</p>
+<p><a id="video-link" href="2m_motion.mp4">Open overlay video</a> · <a id="data-link" href="2m_motion.jsonl">Tracking data</a> · <a href="motion_review.md">Results and limitations</a></p>
+<p>The detector waits for motion to acquire a resting ball. The floor boundary is a heuristic preference. Small distant balls, partial visibility and moving clothing remain difficult; the appearance model was trained on this ball and environment.</p>
+<script>
+  const inputs = {
+    '2m': '../../recordings/test_2m_onground_20261002_104834_049431.mp4',
+    '5m': '../../recordings/test_5m_onground.mp4',
+    '11m': '../../recordings/test_11m_onground.mp4'
+  };
+  const player = document.getElementById('player');
+  let distance = '2m', view = 'overlay';
+  function select(nextDistance, nextView) {
+    const time = nextDistance === distance ? player.currentTime : 0;
+    const playing = !player.paused;
+    distance = nextDistance;
+    view = nextView;
+    player.src = view === 'overlay' ? `${distance}_motion.mp4` : inputs[distance];
+    player.onloadedmetadata = () => {
+      player.currentTime = Math.min(time, Math.max(0, player.duration - .02));
+      if (playing) player.play().catch(() => {});
+    };
+    document.querySelectorAll('[data-distance]').forEach(button => button.setAttribute('aria-pressed', button.dataset.distance === distance));
+    document.querySelectorAll('[data-view]').forEach(button => button.setAttribute('aria-pressed', button.dataset.view === view));
+    document.getElementById('video-link').href = `${distance}_motion.mp4`;
+    document.getElementById('data-link').href = `${distance}_motion.jsonl`;
+  }
+  document.querySelectorAll('[data-distance]').forEach(button => button.onclick = () => select(button.dataset.distance, view));
+  document.querySelectorAll('[data-view]').forEach(button => button.onclick = () => select(distance, button.dataset.view));
+</script>
+</html>

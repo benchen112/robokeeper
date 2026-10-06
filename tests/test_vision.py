@@ -21,6 +21,16 @@ def candidate(x, y=50, confidence=0.9):
 
 
 class BallVisionTests(unittest.TestCase):
+    def test_bunched_arrival_timestamps_do_not_explode_velocity(self):
+        segmenter = SequenceSegmenter([(candidate(20 + i * 4),) for i in range(8)])
+        tracker = BallTracker(segmenter, confirmation_hits=1, adaptive_gate=True)
+        times = [0, .02, .04, .06, .06001, .08, .10, .12]
+        for i, timestamp in enumerate(times):
+            result = tracker.process(np.zeros((2, 2), np.uint8), timestamp)
+            self.assertTrue(result.observed, f"Lost ball after timestamp burst at {i}")
+            self.assertLess(abs(result.velocity_px_s[0]), 1000)
+        self.assertLess(abs(result.filtered_center[0] - 48), 3)
+
     def test_moving_patterned_ball_and_static_lookalike(self):
         tracker = BallTracker(MotionBallSegmenter(warmup_frames=8, max_area=500))
         confirmed = []
