@@ -159,8 +159,11 @@ class LiveKeeper:
         if self.args.runs_dir:
             self.args.runs_dir.mkdir(parents=True, exist_ok=True)
             path = self.args.runs_dir / f"kick_{datetime.now():%Y%m%d_%H%M%S}.json"
-            path.write_text(json.dumps({**session.record(), "stats": summary["stats"],
-                                        "timings_ms": [round(t, 1) for t in self.timings]}) + "\n")
+            # Write then rename, so Ctrl+C mid-save cannot leave an empty run file.
+            partial = path.with_suffix(".json.partial")
+            partial.write_text(json.dumps({**session.record(), "stats": summary["stats"],
+                                           "timings_ms": [round(t, 1) for t in self.timings]}) + "\n")
+            partial.replace(path)
             logging.info("Saved %s", path)
 
     def _track(self, pair):
