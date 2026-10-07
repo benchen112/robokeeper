@@ -1,0 +1,15 @@
+{
+  "focal_px": 1263.080341202505,
+  "cx": 640.0,
+  "cy": 310.61684785560476,
+  "baseline_m": 0.3,
+  "disparity_offset_px": 0.0,
+  "vertical_offset_px": -33.0,
+  "image_size": [
+    1280,
+    800
+  ],
+  "method": "provisional_from_kicks",
+  "notes": "Fitted from rolling-ball clips with known start distances; assumes parallel cameras and no lens distortion. Replace with a checkerboard calibration for accurate 3D.",
+  "rectification": null
+}

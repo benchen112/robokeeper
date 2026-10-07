@@ -48,6 +48,16 @@
   <li><b>The resting ball is not acquired until it moves</b> (motion-triggered detector), and centers are less accurate when the ball is cut off by the frame edge.</li>
   <li><b>Processing is 200–1200 ms per pair</b>, fine offline but far from the 16.7 ms budget for live 60 fps (step 4).</li>
 </ul>
+<h2>3D positions and camera-plane crossing (step 3, provisional)</h2>
+<p>Provisional calibration from these kicks (<code>calibration/stereo.json</code>, made by <code>tools/calibrate_stereo.py kicks</code>): focal ≈ 1263 px (±5%, ~54° field of view), horizon row 311, right eye 33 px low, 30 cm baseline. Predictions by <code>robokeeper/trajectory.py</code>, replayed frame by frame with <code>tools/predict_kicks.py</code> (<a href="predictions.json">full timeline</a>).</p>
+<img src="topdown.png" alt="Top view of the three ball paths and their predicted camera-plane crossings" style="width:100%;max-width:700px;background:#fff;border-radius:8px">
+<table>
+  <tr><th>Clip</th><th>Predicted crossing X</th><th>Ball speed</th><th>Crossing after last frame</th><th>Check error*</th></tr>
+  <tr><td>2 m</td><td>+0.88 ± 0.03 m (right)</td><td>2.1 m/s</td><td>0.55 s</td><td>1 cm</td></tr>
+  <tr><td>4 m</td><td>+0.98 ± 0.02 m (right)</td><td>4.1 m/s</td><td>0.49 s</td><td>1–5 cm</td></tr>
+  <tr><td>7 m</td><td>+1.39 ± 0.03 m (right)</td><td>3.6 m/s</td><td>0.65 s</td><td>8–16 cm</td></tr>
+</table>
+<p class="legend">*Each prediction, made with only the frames seen so far, is extrapolated to the last observed depth and compared with where the ball actually was. The first prediction is available 0.07 s (5 frames) after tracking starts. Lateral position does not depend on the uncertain focal length (only on baseline and disparity); depth and timing do.</p>
 <script>
   const inputs = {
     '2m': '../../recordings/stereo/kick_2m_20261006_161418.mp4',
