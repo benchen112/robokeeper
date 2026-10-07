@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Robokeeper stereo tracking review</title>
+<style>
+  body { margin: 0 auto; max-width: 1300px; padding: 24px; background: #10151b; color: #e4ecf4; font: 16px/1.5 system-ui, sans-serif; }
+  h1 { font-size: 26px; margin: 0 0 12px; }
+  h2 { font-size: 19px; margin: 28px 0 8px; }
+  button { background: #273340; color: inherit; border: 1px solid #536475; border-radius: 6px; padding: 8px 18px; cursor: pointer; margin: 0 8px 10px 0; font: inherit; }
+  button[aria-pressed="true"] { background: #195d8b; border-color: #6bbef6; }
+  video { width: 100%; background: #000; border-radius: 8px; }
+  a { color: #88caf6; }
+  .legend { font-size: 14px; color: #bfccd8; }
+  table { border-collapse: collapse; font-size: 15px; }
+  th, td { border-bottom: 1px solid #2c3a48; padding: 6px 14px 6px 0; text-align: left; }
+  li { margin-bottom: 4px; }
+</style>
+<h1>Robokeeper stereo tracking review — 2026-10-07 (faster pipeline)</h1>
+<p>The same 2026-10-06 stereo kicks, re-run through the sped-up pipeline (commit 4927fce): fixed-camera motion mask at half resolution, ring-only edge gradients, classifier last, both eyes in parallel, downscaled large-radius acquisition search, and stereo pairs rejected when the eyes disagree on height. Left eye on the left, right eye on the right. Compare with the <a href="../2026-10-06/stereo_review.html">2026-10-06 review</a> (previous pipeline).</p>
+<div aria-label="Recording">
+  <button data-distance="2m" aria-pressed="true">2 m</button>
+  <button data-distance="4m" aria-pressed="false">4 m</button>
+  <button data-distance="7m" aria-pressed="false">7 m</button>
+</div>
+<div aria-label="Video view">
+  <button data-view="overlay" aria-pressed="true">Tracking overlay</button>
+  <button data-view="input" aria-pressed="false">Original clip</button>
+</div>
+<video id="player" controls playsinline preload="metadata" src="stereo_2m.mp4"></video>
+<p class="legend">Green measured track, yellow brief-gap prediction, white detection, dashed blue estimated floor boundary. The "Pair … ms" label is laptop replay time, not Pi time.</p>
+<p><a id="video-link" href="stereo_2m.mp4">Open overlay video</a> · <a id="data-link" href="stereo_2m.jsonl">Tracking data</a></p>
+
+<h2>2D segmentation per eye</h2>
+<table>
+  <tr><th>Clip</th><th>Frames</th><th>Ball confirmed L / R</th><th>Both eyes</th></tr>
+  <tr><td>2 m</td><td>145</td><td>35 / 34</td><td>24 (frames 43–66)</td></tr>
+  <tr><td>4 m</td><td>203</td><td>44 / 49</td><td>42 (frames 51–92)</td></tr>
+  <tr><td>7 m</td><td>416</td><td>98 / 102</td><td>80 (frames 66–145, plus one false pair at 313 that triangulation rejects)</td></tr>
+</table>
+<p class="legend">Previous pipeline: both eyes 25 / 43 / 77 pairs. Against the old tracks frame by frame, 98–99% of the detections both pipelines made land on the same spot.</p>
+
+<h2>3D positions and camera-plane crossing</h2>
+<p>Same provisional calibration (<code>calibration/stereo.json</code>) and predictor as 2026-10-06 (<a href="predictions.json">full timeline</a>).</p>
+<img src="topdown.png" alt="Top view of the three ball paths and their predicted camera-plane crossings" style="width:100%;max-width:700px;background:#fff;border-radius:8px">
+<table>
+  <tr><th>Clip</th><th>Predicted crossing X</th><th>Ball speed</th><th>Crossing after last frame</th><th>Check error* (first 0.2 s / 0.2–0.5 s / later)</th></tr>
+  <tr><td>2 m</td><td>+0.87 ± 0.02 m (right)</td><td>2.1 m/s</td><td>0.58 s</td><td>1 / 1 cm</td></tr>
+  <tr><td>4 m</td><td>+0.98 ± 0.02 m (right)</td><td>4.1 m/s</td><td>0.39 s</td><td>1 / 3 / 4 cm</td></tr>
+  <tr><td>7 m</td><td>+1.42 ± 0.04 m (right)</td><td>3.7 m/s</td><td>0.61 s</td><td>25 / 14 / 6 cm</td></tr>
+</table>
+<p class="legend">*Each prediction, made with only the frames seen so far, is extrapolated to the last observed depth and compared with where the ball actually was. Previous pipeline crossings: +0.88 / +0.98 / +1.37 m.</p>
+
+<h2>Findings</h2>
+<ul>
+  <li><b>Tracking and 3D results match the previous pipeline</b>: crossings agree within 5 cm; the 7 m first-0.2 s check is worse (25 vs 8 cm), the later checks slightly better.</li>
+  <li><b>Depth is noisy at range</b> (7 m points scatter ±0.3 m in depth) because the calibration is provisional and disparity is small; a checkerboard calibration is the next accuracy step.</li>
+  <li><b>Laptop replay, old → new, run back to back</b>: median pair time 801→235 ms (2 m), 168→55 ms (4 m), 130→49 ms (7 m); p95 2–7× lower. Pi timing not yet measured.</li>
+  <li><b>The close-up ball (≲2 m) is still the slowest case</b>, and the 11 m clip is not shown: both pipelines track letters on a passing shirt there, not the ball.</li>
+</ul>
+<script>
+  const inputs = {
+    '2m': '../../recordings/stereo/kick_2m_20261006_161418.mp4',
+    '4m': '../../recordings/stereo/kick_4m_20261006_161350.mp4',
+    '7m': '../../recordings/stereo/kick_7m_20261006_161256.mp4'
+  };
+  const player = document.getElementById('player');
+  let distance = '2m', view = 'overlay';
+  function select(nextDistance, nextView) {
+    const time = nextDistance === distance ? player.currentTime : 0;
+    const playing = !player.paused;
+    distance = nextDistance;
+    view = nextView;
+    player.src = view === 'overlay' ? `stereo_${distance}.mp4` : inputs[distance];
+    player.onloadedmetadata = () => {
+      player.currentTime = Math.min(time, Math.max(0, player.duration - .02));
+      if (playing) player.play().catch(() => {});
+    };
+    document.querySelectorAll('[data-distance]').forEach(button => button.setAttribute('aria-pressed', button.dataset.distance === distance));
+    document.querySelectorAll('[data-view]').forEach(button => button.setAttribute('aria-pressed', button.dataset.view === view));
+    document.getElementById('video-link').href = `stereo_${distance}.mp4`;
+    document.getElementById('data-link').href = `stereo_${distance}.jsonl`;
+  }
+  document.querySelectorAll('[data-distance]').forEach(button => button.onclick = () => select(button.dataset.distance, view));
+  document.querySelectorAll('[data-view]').forEach(button => button.onclick = () => select(distance, button.dataset.view));
+</script>
+</html>
