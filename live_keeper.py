@@ -19,6 +19,10 @@ On the Pi (Camarray stereo HAT), same exposure as the recorded kicks:
     python3 live_keeper.py
     # open http://<pi-ip>:8000/ and press Start just before kicking
 
+Add --record to also save each armed kick's processed frames as a replayable
+clip in --record-dir (AVI + timestamp CSV, as record_stereo.py writes), for
+debugging a kick on the laptop with track_stereo.py or live_keeper.py --video.
+
 Laptop replay of a recorded clip (arms on the first frame, prints the result):
 
     python3 live_keeper.py --video recordings/stereo/kick_7m_20261006_161256.avi \
@@ -44,6 +48,7 @@ import numpy as np
 from camera_stream import Handler
 from robokeeper.live import KickSession
 from robokeeper.stereo import LatestPicameraStereo, PreviewBuffer, split_stereo
+from record_stereo import StereoClip
 from robokeeper.stereo3d import StereoCalibration
 from track_ball import annotate, load_timestamps
 from track_stereo import make_tracker
@@ -70,7 +75,11 @@ class ReplaySource:
             self.running = False
             return None
         self.index += 1
-        return self.index, frame, self.timestamps[self.index - 1], None, {"timestamp_source": "recorded"}
+        timestamp = self.timestamps[self.index - 1]
+        # Exposure and gain are unknown in replay; 0 marks them as such.
+        return self.index, frame, timestamp, None, {
+            "timestamp_source": "recorded", "sensor_timestamp_ns": round(timestamp * 1e9),
+            "exposure_us": 0, "analogue_gain": 0.0}
 
     def close(self):
         self.video.release()
@@ -92,6 +101,9 @@ class LiveKeeper:
         self.snapshot = None  # latest (views, results) for the preview thread
         self.trails = [deque(maxlen=30), deque(maxlen=30)]
         self.timings = []
+        self.exposures = []  # (exposure_us, analogue_gain) per processed pair
+        self.clip = None
+        self.encode_pool = ThreadPoolExecutor(2) if args.record else None
         self.skipped = 0
         self.first_ts = self.last_ts = None
         self.error = None
@@ -106,8 +118,16 @@ class LiveKeeper:
                 tracker.reset()
             for trail in self.trails:
                 trail.clear()
-            self.timings, self.skipped, self.first_ts, self.last_ts = [], 0, None, None
+            self.timings, self.exposures = [], []
+            self.skipped, self.first_ts, self.last_ts = 0, None, None
             self.session = KickSession(self.calibration, max_wait_s=self.args.max_wait_s)
+            if self.args.record:
+                self.args.record_dir.mkdir(parents=True, exist_ok=True)
+                self.clip = StereoClip(self.args.record_dir, "kick", {
+                    "requested_fps": self.args.fps, "jpeg_quality": self.args.record_quality,
+                    "encoder_threads": 2, "keep_mjpg": False,
+                    "frames": "only the pairs the live tracker processed, in order"},
+                    self.encode_pool)
             logging.info("Armed: kick when ready")
             return True, "armed"
 
@@ -135,7 +155,11 @@ class LiveKeeper:
         if not self.timings:
             return None
         span = (self.last_ts - self.first_ts) if self.timings and len(self.timings) > 1 else 0
+        exposure, gain = np.array(self.exposures, float).T if self.exposures else ([0], [0])
         return {"pairs_processed": len(self.timings),
+                "exposure_us_median": round(float(np.median(exposure))),
+                "exposure_us_range": [round(float(np.min(exposure))), round(float(np.max(exposure)))],
+                "analogue_gain_median": round(float(np.median(gain)), 2),
                 "processed_fps": round((len(self.timings) - 1) / span, 1) if span > 0 else None,
                 "pair_ms_p50": round(float(np.percentile(self.timings, 50)), 1),
                 "pair_ms_p95": round(float(np.percentile(self.timings, 95)), 1),
@@ -146,6 +170,12 @@ class LiveKeeper:
         summary = session.summary()
         summary["stats"] = self._stats()
         summary["finished_at"] = datetime.now().isoformat(timespec="seconds")
+        clip, self.clip = self.clip, None
+        if clip is not None:
+            summary["recording"] = clip.avi_path.name
+            # Remuxing takes seconds; do it off the tracking and web threads.
+            # Not a daemon, so Ctrl+C still waits for the clip to be written.
+            threading.Thread(target=self._finish_clip, args=(clip, session.finished)).start()
         self.history.appendleft(summary)
         crossing = summary["crossing"]
         if crossing:
@@ -162,9 +192,20 @@ class LiveKeeper:
             # Write then rename, so Ctrl+C mid-save cannot leave an empty run file.
             partial = path.with_suffix(".json.partial")
             partial.write_text(json.dumps({**session.record(), "stats": summary["stats"],
-                                           "timings_ms": [round(t, 1) for t in self.timings]}) + "\n")
+                                           "recording": summary.get("recording"),
+                                           "timings_ms": [round(t, 1) for t in self.timings],
+                                           "exposure_us": [e for e, _ in self.exposures],
+                                           "analogue_gain": [g for _, g in self.exposures]}) + "\n")
             partial.replace(path)
             logging.info("Saved %s", path)
+
+    @staticmethod
+    def _finish_clip(clip, reason):
+        try:
+            clip.finish(reason)
+        except Exception:
+            logging.exception("Saving the recording failed; partial files are in %s",
+                              clip.avi_path.parent)
 
     def _track(self, pair):
         tracker, view, timestamp = pair
@@ -181,7 +222,7 @@ class LiveKeeper:
                     self.error = "No new stereo frame within 2 seconds"
                     continue
                 previous = sequence
-                sequence, frame, timestamp, _, _ = sample
+                sequence, frame, timestamp, _, metadata = sample
                 self.error = None
                 gray = frame if frame.ndim == 2 else cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
                 views = split_stereo(gray, (self.args.eye_width, self.args.eye_height),
@@ -203,6 +244,10 @@ class LiveKeeper:
                     self.first_ts = self.first_ts if self.first_ts is not None else timestamp
                     self.last_ts = timestamp
                     self.timings.append(elapsed_ms)
+                    self.exposures.append((metadata.get("exposure_us") or 0,
+                                           metadata.get("analogue_gain") or 0))
+                    if self.clip is not None:
+                        self.clip.add(sequence, gray, metadata)
                     for trail, result in zip(self.trails, results):
                         if result.observed and result.filtered_center is not None:
                             trail.append(tuple(round(v) for v in result.filtered_center))
@@ -372,6 +417,10 @@ def main():
                         help="End an armed kick with no predicted crossing after this long")
     parser.add_argument("--runs-dir", type=Path, default=Path("runs"),
                         help="Save each kick here as JSON")
+    parser.add_argument("--record", action="store_true",
+                        help="Save each armed kick's processed frames as a replayable clip")
+    parser.add_argument("--record-dir", type=Path, default=Path("recordings/live"))
+    parser.add_argument("--record-quality", type=int, default=95, help="JPEG quality 1-100")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--preview-fps", type=float, default=8, help="Preview rate while idle")
@@ -423,6 +472,8 @@ def main():
             preview.close()
         source.close()
         keeper.pool.shutdown()
+        if keeper.encode_pool:
+            keeper.encode_pool.shutdown()
     if args.no_serve:
         print(json.dumps(keeper.status()["history"][:1], indent=1))
 
