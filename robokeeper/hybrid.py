@@ -356,7 +356,9 @@ class HybridBallSegmenter(AppearanceBallSegmenter):
                 continue
             if self._hint is None and self.acquisition_min_row is not None and y < self.acquisition_min_row:
                 continue
-            if self._hint is None and self._memory_active and not .45 <= radius/self._last_radius <= 2.2:
+            # A ball coming at the camera grows fast between sparse frames; shrinking
+            # (a smaller object taking over) stays tightly limited.
+            if self._hint is None and self._memory_active and not .45 <= radius/self._last_radius <= 4.:
                 continue
             motion=self._motion_support(x,y,radius)
             surrounding_motion=self._motion_support(x,y,radius*1.8, inner_fraction=.70)
@@ -376,7 +378,11 @@ class HybridBallSegmenter(AppearanceBallSegmenter):
             similarity=0.
             if self._template is not None and visible>.95:
                 similarity=float(cv2.matchTemplate(patch,self._template,cv2.TM_CCOEFF_NORMED)[0,0])
-            if self._hint is None and self._template is not None and visible > .95 and similarity < .50:
+            # Remembered appearance only vetoes at a similar size; a ball seen at
+            # several times its last size (approaching) cannot be compared reliably.
+            if (self._hint is None and self._template is not None and visible > .95
+                    and similarity < .50 and (self._last_radius is None
+                                              or .67 < radius/self._last_radius < 1.5)):
                 continue
             edge_threshold = .35 if local and similarity > .55 else (.65 if radius < 10 else .56)
             if motion > .40 and radius >= 10:
