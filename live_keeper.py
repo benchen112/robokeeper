@@ -23,6 +23,10 @@ Add --record to also save each armed kick's processed frames as a replayable
 clip in --record-dir (AVI + timestamp CSV, as record_stereo.py writes), for
 debugging a kick on the laptop with track_stereo.py or live_keeper.py --video.
 
+Add --servo to aim an arm (SG90 on GPIO18 = header pin 12) at the predicted
+crossing: it moves on every new prediction and returns to center afterwards.
+Check its direction first with tools/servo_test.py.
+
 Laptop replay of a recorded clip (arms on the first frame, prints the result):
 
     python3 live_keeper.py --video recordings/stereo/kick_7m_20261006_161256.avi \
@@ -47,6 +51,7 @@ import numpy as np
 
 from camera_stream import Handler
 from robokeeper.live import KickSession
+from robokeeper.servo import ServoArm, arm_angle_deg
 from robokeeper.stereo import LatestPicameraStereo, PreviewBuffer, split_stereo
 from record_stereo import StereoClip
 from robokeeper.stereo3d import StereoCalibration
@@ -86,8 +91,12 @@ class ReplaySource:
 
 
 class LiveKeeper:
-    def __init__(self, source, calibration, args):
+    def __init__(self, source, calibration, args, servo=None):
         self.source = source
+        self.servo = servo
+        self.servo_timer = None
+        self.servo_moves = []  # (seconds since Start, angle, predicted seconds to cross)
+        self.aimed = None  # the crossing the servo was last pointed at
         self.calibration = calibration
         self.args = args
         min_row = None if args.any_height else (
@@ -125,7 +134,13 @@ class LiveKeeper:
                 trail.clear()
             self.timings, self.exposures = [], []
             self.skipped, self.first_ts, self.last_ts = 0, None, None
-            self.session = KickSession(self.calibration, max_wait_s=self.args.max_wait_s)
+            self.session = KickSession(self.calibration, max_wait_s=self.args.max_wait_s,
+                                       aim=self._aim)
+            self.servo_moves, self.aimed = [], None
+            if self.servo:
+                if self.servo_timer:
+                    self.servo_timer.cancel()
+                self.servo.center()
             if self.args.record:
                 self.args.record_dir.mkdir(parents=True, exist_ok=True)
                 self.clip = StereoClip(self.args.record_dir, "kick", {
@@ -135,6 +150,30 @@ class LiveKeeper:
                     self.encode_pool)
             logging.info("Armed: kick when ready")
             return True, "armed"
+
+    def _aim(self, crossing):
+        return arm_angle_deg(crossing.x_m, crossing.height_m, crossing.model,
+                             pivot_x_m=self.args.servo_x_m,
+                             pivot_height_m=self.args.servo_height_m,
+                             ball_radius_m=self.args.ball_radius_m,
+                             limit_deg=self.args.servo_limit_deg)
+
+    def _point_servo(self, session, timestamp):
+        """Move the arm whenever the prediction changes. Caller holds the lock."""
+        if session.prediction is None or session.prediction[0] is self.aimed:
+            return
+        crossing, details = session.prediction
+        self.aimed = crossing
+        self.servo_moves.append((round(timestamp - session.start, 3), details["servo_deg"],
+                                 round(crossing.time_s - timestamp, 3)))
+        if self.servo:
+            self.servo.move(details["servo_deg"])
+
+    def _rest_servo(self):
+        if self.servo:
+            self.servo.center()
+            time.sleep(.6)  # let it get there before the pulses stop
+            self.servo.relax()
 
     def cancel(self):
         with self.lock:
@@ -149,6 +188,8 @@ class LiveKeeper:
             session = self.session
             return {
                 "state": session.state if session and not session.finished else "idle",
+                "servo": None if not self.servo else {"angle_deg": self.servo.angle,
+                                                      "dry_run": self.servo.dry_run},
                 "session": session.summary() if session else None,
                 "stats": self._stats(),
                 "history": list(self.history),
@@ -175,6 +216,11 @@ class LiveKeeper:
         summary = session.summary()
         summary["stats"] = self._stats()
         summary["finished_at"] = datetime.now().isoformat(timespec="seconds")
+        summary["servo_moves"] = list(self.servo_moves)
+        if self.servo and self.args.servo_return_s >= 0:
+            self.servo_timer = threading.Timer(self.args.servo_return_s, self._rest_servo)
+            self.servo_timer.daemon = True
+            self.servo_timer.start()
         clip, self.clip = self.clip, None
         if clip is not None:
             summary["recording"] = clip.avi_path.name
@@ -198,6 +244,7 @@ class LiveKeeper:
             partial = path.with_suffix(".json.partial")
             partial.write_text(json.dumps({**session.record(), "stats": summary["stats"],
                                            "recording": summary.get("recording"),
+                                           "servo_moves": summary["servo_moves"],
                                            "timings_ms": [round(t, 1) for t in self.timings],
                                            "exposure_us": [e for e, _ in self.exposures],
                                            "analogue_gain": [g for _, g in self.exposures]}) + "\n")
@@ -257,7 +304,9 @@ class LiveKeeper:
                         if result.observed and result.filtered_center is not None:
                             trail.append(tuple(round(v) for v in result.filtered_center))
                     self.snapshot = (views, results)
-                    if session.update(timestamp, *results):
+                    done = session.update(timestamp, *results)
+                    self._point_servo(session, timestamp)
+                    if done:
                         self._complete(session)
         except Exception as exc:  # keep the page up to report it
             logging.exception("Tracking stopped")
@@ -349,7 +398,8 @@ async function poll() {
       '<br>' + stats(s.stats) + (sess.crossing ? '<br>Current prediction: ' + crossingText(sess.crossing) : '');
   } else $('live').textContent = '';
   const last = s.history[0];
-  if (last) $('result').innerHTML = `<b>${last.reason}</b> · ${last.finished_at}<br>` + crossingText(last.crossing) +
+  const moves = last && last.servo_moves && last.servo_moves.length ? `<br>Servo moved ${last.servo_moves.length}× · first at ${last.servo_moves[0][1]}°, ${last.servo_moves[0][2].toFixed(2)} s before the predicted crossing · final ${last.servo_moves.at(-1)[1]}°` : '';
+  if (last) $('result').innerHTML = `<b>${last.reason}</b> · ${last.finished_at}<br>` + crossingText(last.crossing) + moves +
      '<br><span class="muted">' + stats(last.stats) + '</span>';
   $('history').innerHTML = s.history.map(h => `<tr><td>${h.finished_at.slice(11)}</td><td>${h.reason}</td>
     <td>${h.crossing ? m(h.crossing.x_m) : '–'}</td><td>${h.crossing ? m(h.crossing.height_m) : '–'}</td>
@@ -433,6 +483,24 @@ def main():
                         help="Save each armed kick's processed frames as a replayable clip")
     parser.add_argument("--record-dir", type=Path, default=Path("recordings/live"))
     parser.add_argument("--record-quality", type=int, default=95, help="JPEG quality 1-100")
+    servo = parser.add_argument_group("servo (arm in the goal plane; 0 deg = straight down)")
+    servo.add_argument("--servo", action="store_true", help="Drive the servo on --servo-pin")
+    servo.add_argument("--servo-dry-run", action="store_true",
+                       help="Compute and log servo angles without GPIO (laptop testing)")
+    servo.add_argument("--servo-pin", type=int, default=18, help="BCM GPIO number (18 = pin 12)")
+    servo.add_argument("--servo-min-us", type=int, default=500, help="Pulse width at -90 deg")
+    servo.add_argument("--servo-max-us", type=int, default=2500, help="Pulse width at +90 deg")
+    servo.add_argument("--servo-invert", action="store_true",
+                       help="Flip direction (see tools/servo_test.py)")
+    servo.add_argument("--servo-limit-deg", type=float, default=90.0)
+    servo.add_argument("--servo-x-m", type=float, default=0.0,
+                       help="Servo shaft sideways from the camera midpoint (+ = camera's right)")
+    servo.add_argument("--servo-height-m", type=float, default=0.30,
+                       help="Servo shaft height above the ground")
+    servo.add_argument("--ball-radius-m", type=float, default=0.11,
+                       help="Ball radius (size 5 = 0.11 m)")
+    servo.add_argument("--servo-return-s", type=float, default=3.0,
+                       help="Return to center this long after a result (-1 = stay)")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--preview-fps", type=float, default=8, help="Preview rate while idle")
@@ -454,7 +522,16 @@ def main():
         source = LatestPicameraStereo(
             args.eye_width * 2, args.eye_height, args.fps, args.camera_num, args.tuning_file,
             None if args.auto_exposure else args.exposure_us, 1.0 if args.auto_exposure else args.gain)
-    keeper = LiveKeeper(source, calibration, args)
+    arm = None
+    if args.servo or args.servo_dry_run:
+        arm = ServoArm(args.servo_pin, min_pulse_us=args.servo_min_us,
+                       max_pulse_us=args.servo_max_us, invert=args.servo_invert,
+                       limit_deg=args.servo_limit_deg, dry_run=not args.servo)
+        arm.center()
+        logging.info("Servo on GPIO%d%s: shaft %.2f m up, %+.2f m sideways; ball radius %.2f m",
+                     args.servo_pin, " (dry run)" if arm.dry_run else "", args.servo_height_m,
+                     args.servo_x_m, args.ball_radius_m)
+    keeper = LiveKeeper(source, calibration, args, arm)
     preview = server = None
     try:
         if not args.no_serve:
@@ -484,6 +561,10 @@ def main():
             preview.close()
         source.close()
         keeper.pool.shutdown()
+        if arm:
+            if keeper.servo_timer:
+                keeper.servo_timer.cancel()
+            arm.close()
         if keeper.encode_pool:
             keeper.encode_pool.shutdown()
     if args.no_serve:

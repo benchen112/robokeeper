@@ -16,7 +16,8 @@ from dataclasses import asdict
 import math
 
 from .stereo3d import touches_border
-from .trajectory import TrajectoryPredictor, servo_angle_deg
+from .servo import arm_angle_deg
+from .trajectory import TrajectoryPredictor
 
 
 def _confirmed(result):
@@ -29,20 +30,22 @@ def _point_json(timestamp, point, start):
             "range_m": round(math.dist((0, 0, 0), (point.x_m, point.height_m, point.z_m)), 3)}
 
 
-def _crossing_json(crossing, now, point, start):
+def _crossing_json(crossing, now, point, start, aim):
     return {"x_m": round(crossing.x_m, 3), "height_m": round(crossing.height_m, 3),
             "x_std_m": round(crossing.x_std_m, 3), "speed_mps": round(crossing.speed_mps, 2),
             "model": crossing.model, "samples_used": crossing.samples_used,
             "time_to_cross_s": round(crossing.time_s - now, 3),
             "made_at_s": round(now - start, 4), "made_at": _point_json(now, point, start),
-            "servo_deg": round(servo_angle_deg(crossing.x_m, crossing.height_m), 1)}
+            "servo_deg": round(aim(crossing), 1)}
 
 
 class KickSession:
     """Feed every processed stereo pair to ``update``; read ``summary()``."""
 
-    def __init__(self, calibration, *, max_wait_s=8.0, window_s=0.6, min_samples=4):
+    def __init__(self, calibration, *, max_wait_s=8.0, window_s=0.6, min_samples=4, aim=None):
         self.calibration = calibration
+        # Crossing -> servo arm angle; defaults to an arm hanging at the cameras.
+        self.aim = aim or (lambda c: arm_angle_deg(c.x_m, c.height_m, c.model))
         self.max_wait_s = max_wait_s
         # Live processing on the Pi can fall to ~4 pairs/s during a kick, when
         # the ball may be in view for only a handful of processed pairs.
@@ -76,7 +79,7 @@ class KickSession:
             self.predictor.add(timestamp, (point.x_m, point.height_m, point.z_m))
             crossing = self.predictor.predict()
             if crossing is not None:
-                self.prediction = (crossing, _crossing_json(crossing, timestamp, point, self.start))
+                self.prediction = (crossing, _crossing_json(crossing, timestamp, point, self.start, self.aim))
                 self.first_prediction = self.first_prediction or self.prediction[1]
             elif len(self.predictor.samples) >= self.predictor.min_samples and self.prediction:
                 # Enough fresh samples and no approach: the ball stopped or turned away.
