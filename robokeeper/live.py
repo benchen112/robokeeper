@@ -41,10 +41,12 @@ def _crossing_json(crossing, now, point, start):
 class KickSession:
     """Feed every processed stereo pair to ``update``; read ``summary()``."""
 
-    def __init__(self, calibration, *, max_wait_s=8.0, window_s=0.6):
+    def __init__(self, calibration, *, max_wait_s=8.0, window_s=0.6, min_samples=4):
         self.calibration = calibration
         self.max_wait_s = max_wait_s
-        self.predictor = TrajectoryPredictor(window_s=window_s)
+        # Live processing on the Pi can fall to ~4 pairs/s during a kick, when
+        # the ball may be in view for only a handful of processed pairs.
+        self.predictor = TrajectoryPredictor(window_s=window_s, min_samples=min_samples)
         self.start = None
         self.points = []
         self.first_prediction = None

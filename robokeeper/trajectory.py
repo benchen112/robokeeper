@@ -47,13 +47,16 @@ class TrajectoryPredictor:
     a shot. Height is constant for a rolling ball, or follows gravity when
     that fits clearly better (a lofted ball). Samples are weighted by stereo
     depth noise, which grows with distance squared, and gross outliers are
-    dropped once before the final fit.
+    dropped once before the final fit. When processing is slow and fewer than
+    ``min_samples`` fall in the window, it stretches to the latest
+    ``min_samples`` samples, up to ``max_window_s``.
     """
 
     def __init__(self, plane_z=0.0, window_s=0.6, min_samples=5,
-                 min_approach_mps=0.3, max_history=240):
+                 min_approach_mps=0.3, max_history=240, max_window_s=1.2):
         self.plane_z = plane_z
         self.window_s = window_s
+        self.max_window_s = max_window_s
         self.min_samples = min_samples
         self.min_approach_mps = min_approach_mps
         self.samples = deque(maxlen=max_history)
@@ -72,7 +75,11 @@ class TrajectoryPredictor:
         if len(self.samples) < self.min_samples:
             return None
         data = np.array(self.samples, np.float64)
-        data = data[data[:, 0] >= data[-1, 0] - self.window_s]
+        recent = data[data[:, 0] >= data[-1, 0] - self.window_s]
+        if len(recent) < self.min_samples:
+            recent = data[-self.min_samples:]
+            recent = recent[recent[:, 0] >= data[-1, 0] - self.max_window_s]
+        data = recent
         if len(data) < self.min_samples:
             return None
         latest = data[-1, 0]

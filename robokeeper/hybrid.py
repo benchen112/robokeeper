@@ -79,11 +79,13 @@ class HybridBallSegmenter(AppearanceBallSegmenter):
     Background difference proposes regions; current-frame circles/appearance verify
     them. Resting objects cannot acquire a track through appearance alone by default.
     Radius limits are broad sensor limits, not a distance profile.
+    ``acquisition_min_row`` (pixels) ignores new balls centered above that row,
+    such as a standing person's head; a ball already tracked may rise above it.
     """
 
     def __init__(self, *, min_radius=3, max_radius=None, floor_region=None,
                  auto_floor=True, difference_threshold=12, verify_appearance=True,
-                 fixed_camera=False):
+                 fixed_camera=False, acquisition_min_row=None):
         if not 1 <= difference_threshold <= 255:
             raise ValueError("Difference threshold must be between 1 and 255")
         super().__init__(min_radius=min_radius, max_radius=max_radius if max_radius is not None else 10000,
@@ -94,6 +96,7 @@ class HybridBallSegmenter(AppearanceBallSegmenter):
         self.difference_threshold = difference_threshold
         self.floor_estimator = FloorEstimator()
         self.fixed_camera = fixed_camera
+        self.acquisition_min_row = acquisition_min_row
         self.motion_scale = .5 if fixed_camera else 1.
         self.ready = False
 
@@ -285,6 +288,10 @@ class HybridBallSegmenter(AppearanceBallSegmenter):
             regions.insert(0, (max(0, int(cx-extent)), max(0, int(cy-extent)),
                                min(w, int(cx+extent)), min(h, int(cy+extent))))
         for x0, y0, x1, y1 in regions[:1 if self._hint is not None else 6]:
+            if self._hint is None and self.acquisition_min_row is not None:
+                # Search only where an acquirable circle's edges can be; this also
+                # skips most of a moving person, the slowest Hough regions.
+                y0 = max(y0, int(self.acquisition_min_row) - 60)
             if min(x1-x0, y1-y0) < self.min_radius*2:
                 continue
             region = gray[y0:y1, x0:x1]
@@ -346,6 +353,8 @@ class HybridBallSegmenter(AppearanceBallSegmenter):
         candidates=[]
         for x,y,radius in proposals:
             if not (-radius*.5 <= x <= w+radius*.5 and 0 <= y < h):
+                continue
+            if self._hint is None and self.acquisition_min_row is not None and y < self.acquisition_min_row:
                 continue
             if self._hint is None and self._memory_active and not .45 <= radius/self._last_radius <= 2.2:
                 continue
@@ -421,15 +430,30 @@ class HybridBallSegmenter(AppearanceBallSegmenter):
             track["misses"] += 1
         used = set()
         accepted = []
+        now = self._timestamp
+        # Gates were tuned for consecutive 60 fps frames. When processing falls
+        # behind, predict each tracklet forward and widen the gate with the gap.
+        expected = []
+        for track in self._tracklets:
+            gap = 1. if now is None or track["time"] is None else max(1., (now-track["time"])*60)
+            position = track["position"]
+            if track["velocity"] is not None and now is not None:
+                position = (position[0]+track["velocity"][0]*(now-track["time"]),
+                            position[1]+track["velocity"][1]*(now-track["time"]))
+            expected.append((position, min(gap, 2. if track["velocity"] is not None else 6.)))
         for candidate in candidates[:40]:
             x, y = candidate.center
-            choices = [(hypot(x-track["position"][0], y-track["position"][1]), index)
-                       for index, track in enumerate(self._tracklets)
+            choices = [(hypot(x-position[0], y-position[1]) / (max(8, candidate.radius*.7)*scale), index)
+                       for index, (track, (position, scale)) in enumerate(zip(self._tracklets, expected))
                        if index not in used and .65 < candidate.radius/track["radius"] < 1.55]
             distance, index = min(choices, default=(float("inf"), -1))
-            if distance <= max(8, candidate.radius*.7):
+            if distance <= 1:
                 track = self._tracklets[index]
                 used.add(index)
+                if now is not None and track["time"] is not None and now > track["time"]:
+                    track["velocity"] = ((x-track["position"][0])/(now-track["time"]),
+                                         (y-track["position"][1])/(now-track["time"]))
+                track["time"] = now
                 track["position"] = candidate.center
                 track["radius"] = candidate.radius
                 track["misses"] = 0
@@ -465,7 +489,7 @@ class HybridBallSegmenter(AppearanceBallSegmenter):
             else:
                 self._tracklets.append(dict(position=candidate.center, radius=candidate.radius,
                                             history=deque([(self._frames,candidate.center,candidate.radius)],maxlen=5),
-                                            misses=0))
+                                            misses=0, time=now, velocity=None))
                 used.add(len(self._tracklets)-1)
         self._tracklets = [track for track in self._tracklets if track["misses"] < 3][-60:]
         return tuple(accepted)

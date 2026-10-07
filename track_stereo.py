@@ -30,14 +30,16 @@ def make_tracker(args):
             min_radius=args.min_radius, max_radius=args.max_radius,
             auto_floor=not args.no_auto_floor,
             verify_appearance=not args.no_appearance_verifier,
-            fixed_camera=not args.moving_camera)
+            fixed_camera=not args.moving_camera,
+            acquisition_min_row=getattr(args, "min_ball_row", None))
     elif args.detector == "appearance":
         segmenter = AppearanceBallSegmenter(min_radius=args.min_radius,
                                             max_radius=args.max_radius or 140)
     else:
         segmenter = MotionBallSegmenter()
     return BallTracker(segmenter, confirmation_hits=1 if args.detector == "hybrid" else 3,
-                       adaptive_gate=args.detector == "hybrid"), segmenter
+                       adaptive_gate=args.detector == "hybrid",
+                       max_gap_s=getattr(args, "max_gap_s", 0.2)), segmenter
 
 
 def main():
@@ -59,6 +61,10 @@ def main():
     parser.add_argument("--max-radius", type=int)
     parser.add_argument("--no-auto-floor", action="store_true")
     parser.add_argument("--no-appearance-verifier", action="store_true")
+    parser.add_argument("--min-ball-row", type=int,
+                        help="Ignore new balls centered above this pixel row (e.g. heads)")
+    parser.add_argument("--max-gap-s", type=float, default=0.2,
+                        help="Drop a track after a gap between processed frames this long")
     parser.add_argument("--moving-camera", action="store_true",
                         help="Compensate camera motion (slower); default assumes a rigid mount")
     parser.add_argument("--show-candidates", action="store_true")

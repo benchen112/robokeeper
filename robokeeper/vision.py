@@ -334,6 +334,7 @@ class BallTracker:
         max_misses: int = 5,
         initial_gate_px: float = 70.0,
         adaptive_gate: bool = False,
+        max_gap_s: float = 0.2,
     ) -> None:
         if confirmation_hits < 1 or max_misses < 0 or initial_gate_px <= 0:
             raise ValueError("Invalid tracking limits")
@@ -342,6 +343,7 @@ class BallTracker:
         self.max_misses = max_misses
         self.initial_gate_px = initial_gate_px
         self.adaptive_gate = adaptive_gate
+        self.max_gap_s = max_gap_s
         self._position: tuple[float, float] | None = None
         self._velocity = (0.0, 0.0)
         self._radius = 0.0
@@ -367,14 +369,14 @@ class BallTracker:
         if self._last_time is not None and timestamp <= self._last_time:
             raise ValueError("Frame timestamps must increase")
         dt = timestamp - self._last_time if self._last_time is not None else 0.0
-        if 0 < dt <= .2:
+        if 0 < dt <= self.max_gap_s:
             self._frame_intervals.append(dt)
         velocity_dt = dt
         if len(self._frame_intervals) >= 3:
             # Arrival timestamps can bunch up after USB/decode buffering. Do not
             # turn pixel noise into enormous velocity on a near-zero interval.
             velocity_dt = max(dt, float(np.median(self._frame_intervals)) * .5)
-        if dt > 0.2:
+        if dt > self.max_gap_s:
             self._frame_intervals.clear()
             self._position = None
             self._hits = 0

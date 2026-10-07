@@ -90,9 +90,14 @@ class LiveKeeper:
         self.source = source
         self.calibration = calibration
         self.args = args
+        min_row = None if args.any_height else (
+            args.min_ball_row if args.min_ball_row is not None else round(calibration.cy - 100))
         options = SimpleNamespace(detector="hybrid", min_radius=3, max_radius=None,
                                   no_auto_floor=False, no_appearance_verifier=False,
-                                  moving_camera=False)
+                                  moving_camera=False, min_ball_row=min_row,
+                                  max_gap_s=args.max_gap_s)
+        logging.info("New balls must be centered below row %s; track kept over gaps up to %.2f s",
+                     min_row, args.max_gap_s)
         self.trackers = [make_tracker(options)[0] for _ in range(2)]
         self.pool = ThreadPoolExecutor(2)
         self.lock = threading.Lock()
@@ -413,6 +418,13 @@ def main():
     parser.add_argument("--auto-exposure", action="store_true", help="Ignore --exposure-us/--gain")
     parser.add_argument("--tuning-file", help="Optional Picamera2 tuning JSON")
     parser.add_argument("--swap-eyes", action="store_true", help="Label the right half as left")
+    parser.add_argument("--min-ball-row", type=int,
+                        help="Ignore new balls centered above this pixel row, such as heads "
+                             "(default: 100 px above the calibration's horizon row)")
+    parser.add_argument("--any-height", action="store_true",
+                        help="Acquire balls anywhere in the image (no --min-ball-row)")
+    parser.add_argument("--max-gap-s", type=float, default=0.4,
+                        help="Keep a track across processing gaps up to this long")
     parser.add_argument("--max-wait-s", type=float, default=8.0,
                         help="End an armed kick with no predicted crossing after this long")
     parser.add_argument("--runs-dir", type=Path, default=Path("runs"),
