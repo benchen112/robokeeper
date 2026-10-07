@@ -41,6 +41,12 @@ class TriangulationTests(unittest.TestCase):
     def test_tiny_or_negative_disparity_is_rejected(self):
         self.assertIsNone(CALIBRATION.triangulate((640, 300), (640, 333)))
 
+    def test_pairs_that_disagree_on_height_are_rejected(self):
+        left, right = CALIBRATION.project((0.2, 0.3, 6.0))
+        self.assertIsNotNone(CALIBRATION.triangulate(left, right, radius_px=22))
+        mismatched = (right[0], right[1] - 250)
+        self.assertIsNone(CALIBRATION.triangulate(left, mismatched, radius_px=22))
+
     def test_calibration_json_round_trip(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "stereo.json"

@@ -62,9 +62,15 @@ class StereoCalibration:
             rectified.append(tuple(float(v) for v in mapped[0, 0]))
         return tuple(rectified)
 
-    def triangulate(self, left_xy, right_xy, min_disparity_px=1.0):
-        """Ball center in meters, or None when the disparity is too small."""
+    def triangulate(self, left_xy, right_xy, min_disparity_px=1.0, radius_px=None):
+        """Ball center in meters, or None when the disparity is too small.
+
+        With ``radius_px``, also None when the eyes disagree on height by more
+        than the provisional calibration allows: the eyes saw different objects.
+        """
         (xl, yl), (xr, yr) = self.rectify(left_xy, right_xy)
+        if radius_px is not None and abs(yl - yr) > max(40.0, 0.6 * radius_px):
+            return None
         disparity = xl - xr - self.disparity_offset_px
         if disparity < min_disparity_px:
             return None

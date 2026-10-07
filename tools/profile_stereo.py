@@ -151,7 +151,8 @@ def profile_clip(path, calibration, timer, args):
     count = round(video.get(cv2.CAP_PROP_FRAME_COUNT))
     timestamps = load_timestamps(Path(path).with_suffix(".csv"), count)
     options = SimpleNamespace(detector="hybrid", min_radius=3, max_radius=None,
-                              no_auto_floor=False, no_appearance_verifier=False)
+                              no_auto_floor=False, no_appearance_verifier=False,
+                              moving_camera=args.moving_camera)
     trackers = [make_tracker(options)[0], make_tracker(options)[0]]
     predictor = TrajectoryPredictor()
     rows, paused = [], 0.0
@@ -183,7 +184,8 @@ def profile_clip(path, calibration, timer, args):
             distance = None
             start = time.perf_counter()
             if all(r.state == "confirmed" and r.observed for r in (left, right)):
-                point = calibration.triangulate(left.center, right.center)
+                point = calibration.triangulate(left.center, right.center,
+                                                radius_px=(left.radius + right.radius) / 2)
                 if point:
                     distance = point.z_m
                     predictor.add(timestamps[index], (point.x_m, point.height_m, point.z_m))
@@ -248,6 +250,7 @@ def main():
     parser.add_argument("--calibration", type=Path, default=Path("calibration/stereo.json"))
     parser.add_argument("--opencv-threads", type=int, default=2, help="Same default as track_stereo.py")
     parser.add_argument("--max-frames", type=int)
+    parser.add_argument("--moving-camera", action="store_true", help="Same flag as track_stereo.py")
     parser.add_argument("--temp-limit", type=float, default=78.0)
     parser.add_argument("--min-free-mb", type=float, default=150.0)
     parser.add_argument("--output", type=Path)

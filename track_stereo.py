@@ -3,6 +3,7 @@
 
 import argparse
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 from http.server import ThreadingHTTPServer
 import json
@@ -28,7 +29,8 @@ def make_tracker(args):
         segmenter = HybridBallSegmenter(
             min_radius=args.min_radius, max_radius=args.max_radius,
             auto_floor=not args.no_auto_floor,
-            verify_appearance=not args.no_appearance_verifier)
+            verify_appearance=not args.no_appearance_verifier,
+            fixed_camera=not args.moving_camera)
     elif args.detector == "appearance":
         segmenter = AppearanceBallSegmenter(min_radius=args.min_radius,
                                             max_radius=args.max_radius or 140)
@@ -57,6 +59,8 @@ def main():
     parser.add_argument("--max-radius", type=int)
     parser.add_argument("--no-auto-floor", action="store_true")
     parser.add_argument("--no-appearance-verifier", action="store_true")
+    parser.add_argument("--moving-camera", action="store_true",
+                        help="Compensate camera motion (slower); default assumes a rigid mount")
     parser.add_argument("--show-candidates", action="store_true")
     parser.add_argument("--opencv-threads", type=int, default=2)
     parser.add_argument("--display", action="store_true", help="Show a local OpenCV window")
@@ -109,8 +113,16 @@ def main():
     last_preview = 0
     first_timestamp = last_timestamp = None
     camera = video = preview = review = None
+
+    def track_eye(tracker, view, timestamp):
+        # OpenCV and large numpy ops release the GIL, so the eyes overlap in threads.
+        start = time.monotonic()
+        result = tracker.process(view, timestamp)
+        return result, start, time.monotonic()
+
     try:
         with ExitStack() as stack:
+            eye_pool = stack.enter_context(ThreadPoolExecutor(2))
             if args.video:
                 video = cv2.VideoCapture(args.video)
                 stack.callback(video.release)
@@ -185,10 +197,9 @@ def main():
                                  args.eye_height, metadata["timestamp_source"])
                 pair_start = time.monotonic()
                 results, rows = [], []
-                for i, ((tracker, segmenter), view) in enumerate(zip(trackers, views)):
-                    start = time.monotonic()
-                    result = tracker.process(view, timestamp)
-                    end = time.monotonic()
+                outcomes = list(eye_pool.map(track_eye, [t for t, _ in trackers], views,
+                                             (timestamp, timestamp)))
+                for i, ((_, segmenter), (result, start, end)) in enumerate(zip(trackers, outcomes)):
                     results.append(result)
                     rows.append(json.loads(as_json(
                         result, (end-start)*1000,

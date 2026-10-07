@@ -31,8 +31,8 @@ SERIES = ((214, 120, 42), (52, 104, 235), (122, 175, 27))  # BGR of #2a78d6, #eb
 def replay(track, calibration, args):
     predictor = TrajectoryPredictor(window_s=args.window_s)
     points, steps = [], []
-    for frame_index, timestamp, (left_xy, _, right_xy, _) in track:
-        point = calibration.triangulate(left_xy, right_xy)
+    for frame_index, timestamp, (left_xy, left_r, right_xy, right_r) in track:
+        point = calibration.triangulate(left_xy, right_xy, radius_px=(left_r + right_r) / 2)
         if point is None:
             continue
         predictor.add(timestamp, (point.x_m, point.height_m, point.z_m))

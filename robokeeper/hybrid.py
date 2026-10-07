@@ -9,6 +9,10 @@ import numpy as np
 from .appearance import BallAppearanceVerifier
 from .vision import AppearanceBallSegmenter, BallCandidate
 
+# Hough cost grows with the radius range. Acquisition scans of large motion
+# regions search larger circles on a copy where they are at most this many pixels.
+ACQUISITION_HOUGH_MAX_RADIUS = 48
+
 
 @dataclass(frozen=True)
 class FloorEstimate:
@@ -70,13 +74,16 @@ class HybridBallSegmenter(AppearanceBallSegmenter):
     """Require scene-relative motion to acquire, then retain ball appearance locally.
 
     Camera translation/rotation is estimated from sparse feature flow with RANSAC.
+    A ``fixed_camera`` (rigid mount) skips that alignment and builds the motion
+    mask at half resolution; circle checks still use full-resolution pixels.
     Background difference proposes regions; current-frame circles/appearance verify
     them. Resting objects cannot acquire a track through appearance alone by default.
     Radius limits are broad sensor limits, not a distance profile.
     """
 
     def __init__(self, *, min_radius=3, max_radius=None, floor_region=None,
-                 auto_floor=True, difference_threshold=12, verify_appearance=True):
+                 auto_floor=True, difference_threshold=12, verify_appearance=True,
+                 fixed_camera=False):
         if not 1 <= difference_threshold <= 255:
             raise ValueError("Difference threshold must be between 1 and 255")
         super().__init__(min_radius=min_radius, max_radius=max_radius if max_radius is not None else 10000,
@@ -86,6 +93,8 @@ class HybridBallSegmenter(AppearanceBallSegmenter):
         self.auto_floor = auto_floor and floor_region is None
         self.difference_threshold = difference_threshold
         self.floor_estimator = FloorEstimator()
+        self.fixed_camera = fixed_camera
+        self.motion_scale = .5 if fixed_camera else 1.
         self.ready = False
 
     def reset(self):
@@ -146,37 +155,50 @@ class HybridBallSegmenter(AppearanceBallSegmenter):
         projected = self.camera_transform @ np.array((*point, 1.), dtype=np.float32)
         return tuple(projected[:2] / projected[2])
 
-    def _motion(self, gray):
+    def _motion(self, full):
+        h, w = full.shape
+        gray = full if self.motion_scale == 1 else cv2.resize(
+            full, None, fx=self.motion_scale, fy=self.motion_scale, interpolation=cv2.INTER_AREA)
         if self._previous is None:
             self._previous = gray.copy()
             self._background = gray.astype(np.float32)
             self._recent_motion = np.zeros(gray.shape, np.float32)
-            self.motion_mask = np.zeros(gray.shape, np.uint8)
+            self.motion_mask = np.zeros(full.shape, np.uint8)
             return False
-        transform, reliable = self._camera_transform(self._previous, gray)
-        self.camera_transform = transform
-        self.camera_motion_reliable = reliable
         size = (gray.shape[1], gray.shape[0])
-        aligned = cv2.warpPerspective(self._previous, transform, size, borderMode=cv2.BORDER_REPLICATE)
-        background = cv2.warpPerspective(self._background, transform, size, borderMode=cv2.BORDER_REPLICATE)
-        recent = cv2.warpPerspective(self._recent_motion, transform, size)
+        if self.fixed_camera:
+            reliable = True
+            aligned, background, recent = self._previous, self._background, self._recent_motion
+            valid = None
+        else:
+            transform, reliable = self._camera_transform(self._previous, gray)
+            self.camera_transform = transform
+            aligned = cv2.warpPerspective(self._previous, transform, size, borderMode=cv2.BORDER_REPLICATE)
+            background = cv2.warpPerspective(self._background, transform, size, borderMode=cv2.BORDER_REPLICATE)
+            recent = cv2.warpPerspective(self._recent_motion, transform, size)
+            valid = cv2.warpPerspective(np.ones(gray.shape, np.uint8), transform, size)
+        self.camera_motion_reliable = reliable
         # Remove uniform illumination changes before measuring scene-relative motion.
         offset = float(np.median(gray[::8, ::8].astype(float) - aligned[::8, ::8]))
         # A gradient allowance suppresses interpolation residuals at stationary edges.
+        # Gradients per pixel grow as the mask resolution drops, so the allowance scales.
         dx = cv2.Sobel(aligned, cv2.CV_32F, 1, 0)
         dy = cv2.Sobel(aligned, cv2.CV_32F, 0, 1)
-        edge_noise = .25 * cv2.magnitude(dx, dy)
+        edge_noise = (.25 * self.motion_scale) * cv2.magnitude(dx, dy)
         delta = np.abs(gray.astype(np.float32) - aligned.astype(np.float32) - offset)
         noise = float(np.percentile(delta[::8, ::8], 70))
         threshold = max(self.difference_threshold, noise * 3)
         short = (delta > threshold + edge_noise).astype(np.uint8) * 255
-        valid = cv2.warpPerspective(np.ones(gray.shape, np.uint8), transform, size)
-        short[valid == 0] = 0
+        if valid is not None:
+            short[valid == 0] = 0
         recent = np.maximum(recent * .72, short.astype(np.float32))
         offset_bg = float(np.median(gray[::8, ::8].astype(float) - background[::8, ::8]))
         background += offset_bg
         foreground = np.abs(gray.astype(np.float32) - background) > threshold
-        mask = ((recent > 45) & foreground & (valid > 0)).astype(np.uint8) * 255
+        mask = (recent > 45) & foreground
+        if valid is not None:
+            mask &= valid > 0
+        mask = mask.astype(np.uint8) * 255
         fraction = float((short > 0).mean())
         if not reliable or fraction > .20:
             mask.fill(0)
@@ -188,6 +210,8 @@ class HybridBallSegmenter(AppearanceBallSegmenter):
         self._previous = gray.copy()
         self._background = background
         self._recent_motion = recent
+        if mask.shape != full.shape:
+            mask = cv2.resize(mask, (w, h), interpolation=cv2.INTER_NEAREST)
         self.motion_mask = mask
         self._motion_integral = cv2.integral((mask > 0).astype(np.uint8))
         return reliable and fraction <= .20
@@ -260,8 +284,6 @@ class HybridBallSegmenter(AppearanceBallSegmenter):
             extent = radius + margin
             regions.insert(0, (max(0, int(cx-extent)), max(0, int(cy-extent)),
                                min(w, int(cx+extent)), min(h, int(cy+extent))))
-        gx = cv2.Sobel(gray, cv2.CV_32F, 1, 0)
-        gy = cv2.Sobel(gray, cv2.CV_32F, 0, 1)
         for x0, y0, x1, y1 in regions[:1 if self._hint is not None else 6]:
             if min(x1-x0, y1-y0) < self.min_radius*2:
                 continue
@@ -276,20 +298,27 @@ class HybridBallSegmenter(AppearanceBallSegmenter):
             # Extend only image-border sides to propose partly visible circles.
             left_pad = max_r if x0 == 0 else 0
             right_pad = max_r if x1 == w else 0
-            search = cv2.copyMakeBorder(region, 0, 0, left_pad, right_pad, cv2.BORDER_REPLICATE)
+            padded = cv2.copyMakeBorder(region, 0, 0, left_pad, right_pad, cv2.BORDER_REPLICATE)
             # Bound Hough work in large close-up regions. Small distant-ball
             # regions retain their native pixels; validation uses native gradients.
-            scale = min(1., np.sqrt(250000 / search.size))
-            if scale < 1.:
-                search = cv2.resize(search, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
-            cs = cv2.HoughCircles(search, cv2.HOUGH_GRADIENT, 1,
-                                  max(5, min_r*scale), param1=80,
-                                  param2=12 if max_r*scale < 40 else 22,
-                                  minRadius=max(2, int(min_r*scale)),
-                                  maxRadius=max(3, int(max_r*scale)))
-            if cs is not None:
-                proposals.extend((float(x/scale+x0-left_pad), float(y/scale+y0), float(r/scale))
-                                 for x,y,r in cs[0])
+            area_scale = min(1., np.sqrt(250000 / padded.size))
+            bands = [(min_r, max_r, area_scale)]
+            split = ACQUISITION_HOUGH_MAX_RADIUS / area_scale
+            if self._hint is None and min_r < split * .5 < split < max_r:
+                # Small radii at native scale; large radii (overlapping) on a smaller copy.
+                bands = [(min_r, split, area_scale),
+                         (split * .9, max_r, ACQUISITION_HOUGH_MAX_RADIUS / max_r)]
+            for low, high, scale in bands:
+                search = padded if scale == 1. else cv2.resize(
+                    padded, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+                cs = cv2.HoughCircles(search, cv2.HOUGH_GRADIENT, 1,
+                                      max(5, low*scale), param1=80,
+                                      param2=12 if high*scale < 40 else 22,
+                                      minRadius=max(2, int(low*scale)),
+                                      maxRadius=max(3, int(high*scale)))
+                if cs is not None:
+                    proposals.extend((float(x/scale+x0-left_pad), float(y/scale+y0), float(r/scale))
+                                     for x,y,r in cs[0])
 
         if self._hint is not None and self._template is not None:
             (cx, cy), radius, margin = self._hint
@@ -331,16 +360,7 @@ class HybridBallSegmenter(AppearanceBallSegmenter):
                 local=hypot(x-cx,y-cy) < max(12,previous_radius*.7)
             if motion * radius < .75 and not local:
                 continue
-            appearance_margin = self.verifier.score(gray,x,y,radius) if self.verifier else 0.
-            partial = x-radius < 0 or x+radius > w
-            margin_threshold = -.6 if self._hint is not None else (-.6 if radius < 25 or partial else .60)
-            above_floor = (self.auto_floor and floor.boundary_y is not None
-                           and floor.confidence > .35 and (y+radius)/h < floor.boundary_y-.05)
-            if self._hint is None and (radius < 10 or above_floor):
-                margin_threshold = max(margin_threshold, .60)
-            if self.verifier and appearance_margin < margin_threshold:
-                continue
-            support=self._edge_support(x,y,radius,gx,gy)
+            support=self._edge_support(x,y,radius)
             patch,visible=self._patch(x,y,radius)
             if not local and patch.std() < 6 and support < .80:
                 continue
@@ -356,6 +376,16 @@ class HybridBallSegmenter(AppearanceBallSegmenter):
                 continue
             if motion * radius < .40 and not (local and similarity>.65
                                                and self._frames-self._last_motion_frame <= 6):
+                continue
+            # The classifier is the costliest check, so it runs on survivors only.
+            appearance_margin = self.verifier.score(gray,x,y,radius) if self.verifier else 0.
+            partial = x-radius < 0 or x+radius > w
+            margin_threshold = -.6 if self._hint is not None else (-.6 if radius < 25 or partial else .60)
+            above_floor = (self.auto_floor and floor.boundary_y is not None
+                           and floor.confidence > .35 and (y+radius)/h < floor.boundary_y-.05)
+            if self._hint is None and (radius < 10 or above_floor):
+                margin_threshold = max(margin_threshold, .60)
+            if self.verifier and appearance_margin < margin_threshold:
                 continue
             score=.50*support+.35*min(1.,motion*radius/3.)+.15*max(0.,similarity)
             if self.verifier:

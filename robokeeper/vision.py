@@ -199,7 +199,21 @@ class AppearanceBallSegmenter:
                           borderMode=cv2.BORDER_REPLICATE)
         return patch, float(valid.mean())
 
-    def _edge_support(self, x, y, radius, gx, gy):
+    def _point_sobel(self, xx, yy):
+        """cv2.Sobel(self._gray) x/y gradients at integer points only (reflect-101 border)."""
+        h, w = self._gray.shape
+        def reflect(v, n):
+            return np.abs(np.where(v >= n, 2 * (n - 1) - v, v))
+        x0, x1, x2 = (reflect(xx + d, w) for d in (-1, 0, 1))
+        y0, y1, y2 = (reflect(yy + d, h) for d in (-1, 0, 1))
+        g = self._gray.astype(np.float32, copy=False)
+        dx = (g[y0, x2] + 2 * g[y1, x2] + g[y2, x2]) - (g[y0, x0] + 2 * g[y1, x0] + g[y2, x0])
+        dy = (g[y2, x0] + 2 * g[y2, x1] + g[y2, x2]) - (g[y0, x0] + 2 * g[y0, x1] + g[y0, x2])
+        return dx, dy
+
+    def _edge_support(self, x, y, radius, gx=None, gy=None):
+        # Without precomputed gradient images, gradients are sampled at the ring only.
+        shape = self._gray.shape if gx is None else gx.shape
         angles = np.linspace(0, 2 * np.pi, 96, endpoint=False)
         co, si = np.cos(angles), np.sin(angles)
         supported = np.zeros(96, dtype=bool)
@@ -207,10 +221,10 @@ class AppearanceBallSegmenter:
         for offset in (-3, -1, 1, 3):
             xx = np.rint(x + (radius + offset) * co).astype(int)
             yy = np.rint(y + (radius + offset) * si).astype(int)
-            valid = (xx >= 0) & (xx < gx.shape[1]) & (yy >= 0) & (yy < gx.shape[0])
-            xx = np.clip(xx, 0, gx.shape[1] - 1)
-            yy = np.clip(yy, 0, gx.shape[0] - 1)
-            dx, dy = gx[yy, xx], gy[yy, xx]
+            valid = (xx >= 0) & (xx < shape[1]) & (yy >= 0) & (yy < shape[0])
+            xx = np.clip(xx, 0, shape[1] - 1)
+            yy = np.clip(yy, 0, shape[0] - 1)
+            dx, dy = self._point_sobel(xx, yy) if gx is None else (gx[yy, xx], gy[yy, xx])
             radial = np.abs(dx * co + dy * si)
             supported |= valid & (radial > 50) & (radial > np.hypot(dx, dy) * 0.85)
             visible |= valid
