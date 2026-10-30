@@ -27,6 +27,14 @@ Add --servo to aim an arm (SG90 on GPIO18 = header pin 12) at the predicted
 crossing: it moves on every new prediction and returns to center afterwards.
 Check its direction first with tools/servo_test.py.
 
+Headless (tracking only, for timing on the Pi): no web page, preview or
+recording. Press Enter in the terminal to arm a kick (q + Enter to quit); every
+new prediction prints the servo angle and crossing point, and each result
+prints the per-pair processing times. Run files are still saved to --runs-dir.
+
+    python3 live_keeper.py --headless
+    python3 live_keeper.py --headless --servo   # also move the arm
+
 Laptop replay of a recorded clip (arms on the first frame, prints the result):
 
     python3 live_keeper.py --video recordings/stereo/kick_7m_20261006_161256.avi \
@@ -166,6 +174,11 @@ class LiveKeeper:
         self.aimed = crossing
         self.servo_moves.append((round(timestamp - session.start, 3), details["servo_deg"],
                                  round(crossing.time_s - timestamp, 3)))
+        if self.args.headless:
+            print(f"  t {timestamp - session.start:6.3f} s  servo {details['servo_deg']:+6.1f} deg  "
+                  f"crossing x {details['x_m']:+.2f} m (±{details['x_std_m']:.2f}), "
+                  f"height {details['height_m']:+.2f} m, in {details['time_to_cross_s']:.3f} s",
+                  flush=True)
         if self.servo:
             self.servo.move(details["servo_deg"])
 
@@ -209,6 +222,7 @@ class LiveKeeper:
                 "processed_fps": round((len(self.timings) - 1) / span, 1) if span > 0 else None,
                 "pair_ms_p50": round(float(np.percentile(self.timings, 50)), 1),
                 "pair_ms_p95": round(float(np.percentile(self.timings, 95)), 1),
+                "pair_ms_max": round(float(np.max(self.timings)), 1),
                 "camera_frames_skipped": self.skipped}
 
     def _complete(self, session):
@@ -237,6 +251,12 @@ class LiveKeeper:
         else:
             logging.info("Result (%s): no crossing predicted; %d measurements",
                          session.finished, summary["measurements"])
+        stats = summary["stats"]
+        if stats:
+            logging.info("Processing: %d pairs at %s pairs/s, %d camera frames skipped; "
+                         "per pair %.1f ms median, %.1f p95, %.1f max", stats["pairs_processed"],
+                         stats["processed_fps"], stats["camera_frames_skipped"],
+                         stats["pair_ms_p50"], stats["pair_ms_p95"], stats["pair_ms_max"])
         if self.args.runs_dir:
             self.args.runs_dir.mkdir(parents=True, exist_ok=True)
             path = self.args.runs_dir / f"kick_{datetime.now():%Y%m%d_%H%M%S}.json"
@@ -413,6 +433,18 @@ setInterval(poll, 300); poll();
 """
 
 
+def arm_from_terminal(keeper):
+    """Headless control: Enter arms a kick, q + Enter quits."""
+    print("Press Enter to arm a kick (q + Enter to quit)", flush=True)
+    for line in sys.stdin:
+        if line.strip().lower() in ("q", "quit", "exit"):
+            break
+        ok, message = keeper.start_kick()
+        if not ok:
+            print(message, flush=True)
+    keeper.stopping = True
+
+
 class KeeperHandler(Handler):
     keeper = None
 
@@ -457,6 +489,8 @@ def main():
     parser.add_argument("--timestamps", type=Path, help="Replay timestamp CSV (default: same name)")
     parser.add_argument("--autostart", action="store_true", help="Arm on the first frame")
     parser.add_argument("--no-serve", action="store_true", help="No web page (replay testing)")
+    parser.add_argument("--headless", action="store_true",
+                        help="Tracking only: no web page, preview or recording; arm with Enter")
     parser.add_argument("--calibration", type=Path, default=Path("calibration/stereo.json"))
     parser.add_argument("--camera-num", type=int, default=0)
     parser.add_argument("--eye-width", type=int, default=1280)
@@ -508,8 +542,12 @@ def main():
                         help="Preview rate while tracking (0 = off, frees CPU for tracking)")
     parser.add_argument("--opencv-threads", type=int, default=2)
     args = parser.parse_args()
-    if args.no_serve and not (args.video and args.autostart):
+    if args.headless and args.record:
+        parser.error("--headless measures tracking alone; drop --record")
+    if args.no_serve and not args.headless and not (args.video and args.autostart):
         parser.error("--no-serve is for replay with --video --autostart")
+    args.no_serve = args.no_serve or args.headless
+    args.autostart = args.autostart or bool(args.headless and args.video)
     if not args.auto_exposure and args.exposure_us > 1e6 / args.fps:
         parser.error("--exposure-us must fit within the frame period")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s",
@@ -545,6 +583,8 @@ def main():
                          args.port)
         if args.autostart:
             keeper.start_kick()
+        if args.headless and not args.video:
+            threading.Thread(target=arm_from_terminal, args=(keeper,), daemon=True).start()
         keeper.run()
         if args.video and not args.no_serve:
             logging.info("Replay finished; page stays up until Ctrl+C")
@@ -567,7 +607,7 @@ def main():
             arm.close()
         if keeper.encode_pool:
             keeper.encode_pool.shutdown()
-    if args.no_serve:
+    if args.no_serve and not args.headless:
         print(json.dumps(keeper.status()["history"][:1], indent=1))
 
 
