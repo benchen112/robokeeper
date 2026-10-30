@@ -147,6 +147,11 @@ class MotionBallSegmenter:
         return tuple(sorted(candidates, key=lambda candidate: candidate.confidence, reverse=True))
 
 
+_RING_ANGLES = np.linspace(0, 2 * np.pi, 96, endpoint=False)
+_RING_COS, _RING_SIN = np.cos(_RING_ANGLES), np.sin(_RING_ANGLES)
+_RING_OFFSETS = np.array([[-3.], [-1.], [1.], [3.]])
+
+
 class AppearanceBallSegmenter:
     """Circular edge proposals plus local appearance tracking, including resting balls.
 
@@ -206,28 +211,29 @@ class AppearanceBallSegmenter:
             return np.abs(np.where(v >= n, 2 * (n - 1) - v, v))
         x0, x1, x2 = (reflect(xx + d, w) for d in (-1, 0, 1))
         y0, y1, y2 = (reflect(yy + d, h) for d in (-1, 0, 1))
-        g = self._gray.astype(np.float32, copy=False)
-        dx = (g[y0, x2] + 2 * g[y1, x2] + g[y2, x2]) - (g[y0, x0] + 2 * g[y1, x0] + g[y2, x0])
-        dy = (g[y2, x0] + 2 * g[y2, x1] + g[y2, x2]) - (g[y0, x0] + 2 * g[y0, x1] + g[y0, x2])
+        # Convert only the sampled pixels; converting the whole frame per call
+        # used to dominate the cost of edge checks.
+        def g(y, x):
+            return self._gray[y, x].astype(np.float32)
+        dx = (g(y0, x2) + 2 * g(y1, x2) + g(y2, x2)) - (g(y0, x0) + 2 * g(y1, x0) + g(y2, x0))
+        dy = (g(y2, x0) + 2 * g(y2, x1) + g(y2, x2)) - (g(y0, x0) + 2 * g(y0, x1) + g(y0, x2))
         return dx, dy
 
     def _edge_support(self, x, y, radius, gx=None, gy=None):
         # Without precomputed gradient images, gradients are sampled at the ring only.
         shape = self._gray.shape if gx is None else gx.shape
-        angles = np.linspace(0, 2 * np.pi, 96, endpoint=False)
-        co, si = np.cos(angles), np.sin(angles)
-        supported = np.zeros(96, dtype=bool)
-        visible = np.zeros(96, dtype=bool)
-        for offset in (-3, -1, 1, 3):
-            xx = np.rint(x + (radius + offset) * co).astype(int)
-            yy = np.rint(y + (radius + offset) * si).astype(int)
-            valid = (xx >= 0) & (xx < shape[1]) & (yy >= 0) & (yy < shape[0])
-            xx = np.clip(xx, 0, shape[1] - 1)
-            yy = np.clip(yy, 0, shape[0] - 1)
-            dx, dy = self._point_sobel(xx, yy) if gx is None else (gx[yy, xx], gy[yy, xx])
-            radial = np.abs(dx * co + dy * si)
-            supported |= valid & (radial > 50) & (radial > np.hypot(dx, dy) * 0.85)
-            visible |= valid
+        # All four rings (radius -3, -1, +1, +3) in one vectorized pass.
+        co, si = _RING_COS, _RING_SIN
+        radii = radius + _RING_OFFSETS
+        xx = np.rint(x + radii * co).astype(int)
+        yy = np.rint(y + radii * si).astype(int)
+        valid = (xx >= 0) & (xx < shape[1]) & (yy >= 0) & (yy < shape[0])
+        xx = np.clip(xx, 0, shape[1] - 1)
+        yy = np.clip(yy, 0, shape[0] - 1)
+        dx, dy = self._point_sobel(xx, yy) if gx is None else (gx[yy, xx], gy[yy, xx])
+        radial = np.abs(dx * co + dy * si)
+        supported = (valid & (radial > 50) & (radial > np.hypot(dx, dy) * 0.85)).any(axis=0)
+        visible = valid.any(axis=0)
         if visible.mean() < 0.45:
             return 0.0
         return float(supported.sum() / visible.sum())
@@ -335,6 +341,7 @@ class BallTracker:
         initial_gate_px: float = 70.0,
         adaptive_gate: bool = False,
         max_gap_s: float = 0.2,
+        lock_hits: int = 3,
     ) -> None:
         if confirmation_hits < 1 or max_misses < 0 or initial_gate_px <= 0:
             raise ValueError("Invalid tracking limits")
@@ -344,6 +351,10 @@ class BallTracker:
         self.initial_gate_px = initial_gate_px
         self.adaptive_gate = adaptive_gate
         self.max_gap_s = max_gap_s
+        # Consecutive hits, each close to its prediction, before the segmenter
+        # may skip its full circle search (see set_track_lock).
+        self.lock_hits = lock_hits
+        self._residual = float("inf")
         self._position: tuple[float, float] | None = None
         self._velocity = (0.0, 0.0)
         self._radius = 0.0
@@ -360,6 +371,7 @@ class BallTracker:
         self._confidence = 0.0
         self._hits = 0
         self._misses = 0
+        self._residual = float("inf")
         self._last_time = None
         self._frame_intervals.clear()
         if hasattr(self.segmenter, "reset"):
@@ -390,6 +402,11 @@ class BallTracker:
             )
             margin = max(30.0, self._radius * 0.8) + hypot(*self._velocity) * dt + 12 * self._misses
             self.segmenter.set_tracking_hint(predicted, self._radius, margin)
+        if hasattr(self.segmenter, "set_track_lock"):
+            self.segmenter.set_track_lock(
+                self._position is not None and self._misses == 0
+                and self._hits >= max(self.lock_hits, self.confirmation_hits)
+                and self._residual <= max(4., self._radius * .5))
         candidates = self.segmenter.find_candidates(frame)
         verified = getattr(self.segmenter, "acquisition_candidates", ())
         if self.adaptive_gate and self._position is not None and verified:
@@ -438,6 +455,7 @@ class BallTracker:
                 selected = max(eligible, key=lambda item: item[0])[1]
                 residual_x = selected.center[0] - px
                 residual_y = selected.center[1] - py
+                self._residual = hypot(residual_x, residual_y)
                 self._position = (px + 0.75 * residual_x, py + 0.75 * residual_y)
                 if dt > 0:
                     self._velocity = (
@@ -449,6 +467,7 @@ class BallTracker:
                 self._hits += 1
                 self._misses = 0
             else:
+                self._residual = float("inf")
                 # A one-frame lookalike must not survive to become a track.
                 if self._hits < self.confirmation_hits:
                     self._position = None

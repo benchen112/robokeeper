@@ -57,6 +57,37 @@ class HybridTests(unittest.TestCase):
             result=tracker.process(frame,i/60)
             self.assertIsNone(result.center)
 
+    def test_locked_track_skips_hough_until_the_ball_is_lost(self):
+        for growth in (0, 1):  # rolling across, then approaching the camera
+            with self.subTest(growth=growth):
+                tracker = self.tracker()
+                tracker.segmenter.locked_hough_interval = 0
+                hough = cv2.HoughCircles
+                calls = []
+                def counted(*args, **kwargs):
+                    calls.append(frame)
+                    return hough(*args, **kwargs)
+                cv2.HoughCircles = counted
+                try:
+                    template_only = []
+                    for frame in range(24):
+                        x = 30+frame*4
+                        result = tracker.process(self.scene(x, 12+growth*frame), frame/60)
+                        if tracker.segmenter.template_only:
+                            template_only.append(frame)
+                            self.assertTrue(result.observed)
+                            self.assertLess(abs(result.center[0]-x), 6)
+                            self.assertLess(abs(result.center[1]-100), 6)
+                    self.assertGreater(len(template_only), 10)
+                    self.assertFalse(set(calls) & set(template_only))
+                    calls.clear()
+                    for frame in range(24, 28):
+                        tracker.process(self.scene(), frame/60)
+                    self.assertFalse(tracker.segmenter.template_only)
+                    self.assertTrue(calls)
+                finally:
+                    cv2.HoughCircles = hough
+
     def test_recent_identity_rejects_size_jump_but_expires(self):
         tracker = self.tracker()
         for i in range(20):

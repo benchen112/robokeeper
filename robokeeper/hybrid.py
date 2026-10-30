@@ -12,6 +12,12 @@ from .vision import AppearanceBallSegmenter, BallCandidate
 # Hough cost grows with the radius range. Acquisition scans of large motion
 # regions search larger circles on a copy where they are at most this many pixels.
 ACQUISITION_HOUGH_MAX_RADIUS = 48
+# The remembered template is a 32 px patch, so matching it larger adds cost, not
+# detail. Close balls are matched on a copy where the template is this wide.
+TEMPLATE_MATCH_PX = 24
+# Motion regions beyond these are skipped before Hough (see _hough_proposals).
+MAX_BALL_BLOB_PX = 700
+MAX_BALL_BLOB_ASPECT = 4.5
 
 
 @dataclass(frozen=True)
@@ -81,11 +87,15 @@ class HybridBallSegmenter(AppearanceBallSegmenter):
     Radius limits are broad sensor limits, not a distance profile.
     ``acquisition_min_row`` (pixels) ignores new balls centered above that row,
     such as a standing person's head; a ball already tracked may rise above it.
+    While the tracker reports a lock (``set_track_lock``), template matching alone
+    proposes the ball; Hough runs every ``locked_hough_interval`` locked frames
+    (0 = only on fallback) and whenever the template yields no verified candidate.
     """
 
     def __init__(self, *, min_radius=3, max_radius=None, floor_region=None,
                  auto_floor=True, difference_threshold=12, verify_appearance=True,
-                 fixed_camera=False, acquisition_min_row=None):
+                 fixed_camera=False, acquisition_min_row=None,
+                 locked_hough_interval=8):
         if not 1 <= difference_threshold <= 255:
             raise ValueError("Difference threshold must be between 1 and 255")
         super().__init__(min_radius=min_radius, max_radius=max_radius if max_radius is not None else 10000,
@@ -98,6 +108,7 @@ class HybridBallSegmenter(AppearanceBallSegmenter):
         self.fixed_camera = fixed_camera
         self.acquisition_min_row = acquisition_min_row
         self.motion_scale = .5 if fixed_camera else 1.
+        self.locked_hough_interval = locked_hough_interval
         self.ready = False
 
     def reset(self):
@@ -111,12 +122,19 @@ class HybridBallSegmenter(AppearanceBallSegmenter):
         self._last_motion_frame = 0
         self._timestamp = None
         self._last_observed_timestamp = None
+        self._observed_radii = deque(maxlen=2)
         self._memory_active = False
         self._tracklets = []
         self.raw_candidates = ()
         self.acquisition_candidates = ()
         self.ready = False
+        self._locked = False
+        self._locked_frames = 0
+        self.template_only = False
         self.floor_estimator = FloorEstimator()
+
+    def set_track_lock(self, locked):
+        self._locked = locked
 
     def set_frame_timestamp(self, timestamp):
         self._timestamp = timestamp
@@ -124,6 +142,7 @@ class HybridBallSegmenter(AppearanceBallSegmenter):
     def observe(self, candidate):
         super().observe(candidate)
         self._last_observed_timestamp = self._timestamp
+        self._observed_radii.append((self._timestamp, candidate.radius))
         if self._motion_support(*candidate.center, candidate.radius) * candidate.radius >= .40:
             self._last_motion_frame = self._frames
 
@@ -258,12 +277,36 @@ class HybridBallSegmenter(AppearanceBallSegmenter):
         floor = self.floor_estimator.update(gray) if self.auto_floor else FloorEstimate()
         self.raw_candidates = ()
         self.acquisition_candidates = ()
+        self.template_only = False
         if not self.ready or not valid_motion:
             self._tracklets.clear()
             return ()
+        # Locked onto a predictable ball, the remembered template finds it near
+        # the prediction without Hough. Hough runs on a periodic refresh (radius
+        # re-anchoring), and immediately if the template finds nothing usable.
+        template = self._template_proposals(gray) if self._hint is not None else []
+        self._locked_frames = self._locked_frames + 1 if self._locked and self._hint is not None else 0
+        refresh = (self.locked_hough_interval > 0
+                   and self._locked_frames % self.locked_hough_interval == 0)
+        skip_hough = bool(template) and self._locked_frames > 0 and not refresh
+        proposals = [] if skip_hough else self._hough_proposals(gray)
+        proposals += template + self._border_proposals(w)
+        candidates = self._verify(proposals, gray, floor)
+        if skip_hough and not candidates:
+            candidates = self._verify(self._hough_proposals(gray), gray, floor)
+            self.template_only = False
+        else:
+            self.template_only = skip_hough
+        candidates.sort(key=lambda c:c.confidence, reverse=True)
+        self.raw_candidates = tuple(candidates)
+        self.acquisition_candidates = self._coherent_acquisition(candidates)
+        if self._hint is None:
+            return self.acquisition_candidates
+        return tuple(candidates)
+
+    def _hough_proposals(self, gray):
+        h, w = gray.shape
         proposals = []
-        self.raw_candidates = ()
-        self.acquisition_candidates = ()
         contours, _ = cv2.findContours(self.motion_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         regions = []
         for contour in contours:
@@ -274,6 +317,13 @@ class HybridBallSegmenter(AppearanceBallSegmenter):
             # Keep its upper portion instead of dropping the entire component.
             if bh > h * .35 and bw / bh < .45:
                 bh = min(bh, max(40, bw * 2))
+            # Recorded ball blobs (blurred ball plus motion trail) reached 3.4:1 and
+            # 550 px. Longer or larger ones are people or shadows, and the costliest
+            # Hough regions. A ball entering at a side edge may be a thin sliver.
+            at_side = x == 0 or x + bw == w
+            if max(bw, bh) > MAX_BALL_BLOB_PX or (
+                    not at_side and max(bw, bh) > MAX_BALL_BLOB_ASPECT * min(bw, bh)):
+                continue
             pad = max(16, min(max(bw, bh) // 2, self.max_radius))
             regions.append((max(0, x - pad), max(0, y - pad), min(w, x + bw + pad), min(h, y + bh + pad)))
         regions.sort(key=lambda box: -float(self._motion_integral[box[3],box[2]]
@@ -327,21 +377,85 @@ class HybridBallSegmenter(AppearanceBallSegmenter):
                     proposals.extend((float(x/scale+x0-left_pad), float(y/scale+y0), float(r/scale))
                                      for x,y,r in cs[0])
 
+        return proposals
+
+    def _template_proposals(self, gray):
+        h, w = gray.shape
+        proposals = []
         if self._hint is not None and self._template is not None:
             (cx, cy), radius, margin = self._hint
+            radius = self._expected_radius(radius)
             extent = radius + margin
             x0, y0 = max(0, int(cx-extent)), max(0, int(cy-extent))
             x1, y1 = min(w, int(cx+extent)), min(h, int(cy+extent))
             region = gray[y0:y1, x0:x1]
+            shrink = min(1., TEMPLATE_MATCH_PX / (1.4*radius))
+            if shrink < 1 and region.size:
+                region = cv2.resize(region, None, fx=shrink, fy=shrink, interpolation=cv2.INTER_AREA)
             for scale in (.85, 1., 1.15):
                 rr = radius * scale
-                size = max(5, round(1.4*rr))
+                size = max(5, round(1.4*rr*shrink))
                 if min(region.shape, default=0) < size:
                     continue
-                patch = cv2.resize(self._template, (size,size))
+                patch = cv2.resize(self._template, (size,size), interpolation=cv2.INTER_AREA)
                 _, score, _, location = cv2.minMaxLoc(cv2.matchTemplate(region,patch,cv2.TM_CCOEFF_NORMED))
                 if score > .55:
-                    proposals.append((x0+location[0]+(size-1)/2,y0+location[1]+(size-1)/2,rr))
+                    # Pixel centers map back as (i + .5) / shrink - .5.
+                    proposals.append((score, x0+(location[0]+(size-1)/2+.5)/shrink-.5,
+                                      y0+(location[1]+(size-1)/2+.5)/shrink-.5, rr))
+        if not proposals:
+            return []
+        # The template's radius steps are coarse; fit the ball's edge around the
+        # best match so the circle checks see its true center and size.
+        _, x, y, rr = max(proposals)
+        refined = self._fit_circle(x, y, rr)
+        return ([refined] if refined else []) + [p[1:] for p in proposals]
+
+    def _expected_radius(self, radius):
+        """Extrapolate the ball's size change: an approaching ball can grow a
+        third between processed frames, beyond the template's scale steps."""
+        if len(self._observed_radii) < 2 or self._timestamp is None:
+            return radius
+        (t0, r0), (t1, r1) = self._observed_radii
+        if None in (t0, t1) or t1 <= t0 or self._timestamp <= t1:
+            return radius
+        growth = (r1/r0) ** ((self._timestamp-t1)/(t1-t0))
+        return radius * float(np.clip(growth * r1/radius, .8, 1.8))
+
+    def _fit_circle(self, x, y, radius):
+        """Least-squares circle through the strongest radial edge on rays from (x, y)."""
+        h, w = self._gray.shape
+        angles = np.linspace(0, 2*np.pi, 64, endpoint=False)
+        co, si = np.cos(angles)[:, None], np.sin(angles)[:, None]
+        radii = radius * np.linspace(.7, 1.4, 15)
+        fx, fy = x + co*radii, y + si*radii
+        valid = (fx >= 0) & (fx < w) & (fy >= 0) & (fy < h)
+        xx = np.clip(np.rint(fx).astype(int), 0, w-1)
+        yy = np.clip(np.rint(fy).astype(int), 0, h-1)
+        dx, dy = self._point_sobel(xx, yy)
+        radial = np.abs(dx*co + dy*si) * valid
+        best = radial.argmax(axis=1)
+        rows = np.arange(len(angles))
+        keep = radial[rows, best] > 50
+        if keep.sum() < 16:
+            return None
+        px, py = fx[rows, best][keep], fy[rows, best][keep]
+        for _ in range(2):
+            a = np.column_stack((px, py, np.ones_like(px)))
+            (bx, by, c), *_ = np.linalg.lstsq(a, px*px+py*py, rcond=None)
+            cx, cy = bx/2, by/2
+            r = float(np.sqrt(max(0., c + cx*cx + cy*cy)))
+            # Drop rays that hit a shoe or background edge, then refit once.
+            inliers = np.abs(np.hypot(px-cx, py-cy) - r) < max(2., r*.08)
+            if inliers.sum() < 16:
+                return None
+            px, py = px[inliers], py[inliers]
+        if not (.75 < r/radius < 1.35 and hypot(cx-x, cy-y) < radius*.5):
+            return None
+        return float(cx), float(cy), r
+
+    def _border_proposals(self, w):
+        proposals = []
         if self._hint is not None:
             (cx, cy), radius, _ = self._hint
             if cx-radius < 15 or cx+radius > w-15:
@@ -350,9 +464,17 @@ class HybridBallSegmenter(AppearanceBallSegmenter):
                                  for dx in (-step, 0, step) for dy in (-step, 0, step)
                                  for scale in (.92, 1., 1.08)
                                  if self.min_radius <= radius*scale <= self.max_radius)
+        return proposals
+
+    def _verify(self, proposals, gray, floor):
+        h, w = gray.shape
         candidates=[]
+        # Checks run cheapest first. Rejecting a duplicate of an accepted circle
+        # up front gives the same result as rejecting it after every other check.
         for x,y,radius in proposals:
             if not (-radius*.5 <= x <= w+radius*.5 and 0 <= y < h):
+                continue
+            if any(hypot(x-c.center[0],y-c.center[1])<max(4,radius*.3) for c in candidates):
                 continue
             if self._hint is None and self.acquisition_min_row is not None and y < self.acquisition_min_row:
                 continue
@@ -372,6 +494,8 @@ class HybridBallSegmenter(AppearanceBallSegmenter):
             if motion * radius < .75 and not local:
                 continue
             support=self._edge_support(x,y,radius)
+            if support < .35:  # Below every edge threshold below; skip the patch.
+                continue
             patch,visible=self._patch(x,y,radius)
             if not local and patch.std() < 6 and support < .80:
                 continue
@@ -413,18 +537,11 @@ class HybridBallSegmenter(AppearanceBallSegmenter):
                 else:
                     floor_bonus=floor.boundary_y is not None and floor.confidence>.35 and (y+radius)/h>=floor.boundary_y - .05
                 score += .15 * bool(floor_bonus)
-            if any(hypot(x-c.center[0],y-c.center[1])<max(4,radius*.3) for c in candidates):
-                continue
             bx,by=max(0,int(x-radius)),max(0,int(y-radius))
             ex,ey=min(w,int(x+radius+1)),min(h,int(y+radius+1))
             if ex>bx and ey>by:
                 candidates.append(BallCandidate((x,y),radius,min(1.,score),(bx,by,ex-bx,ey-by)))
-        candidates.sort(key=lambda c:c.confidence, reverse=True)
-        self.raw_candidates = tuple(candidates)
-        self.acquisition_candidates = self._coherent_acquisition(candidates)
-        if self._hint is None:
-            return self.acquisition_candidates
-        return tuple(candidates)
+        return candidates
 
     def _coherent_acquisition(self, candidates):
         """Follow competing proposals before committing; reject stationary flicker."""
