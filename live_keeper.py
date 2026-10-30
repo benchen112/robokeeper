@@ -35,6 +35,10 @@ prints the per-pair processing times. Run files are still saved to --runs-dir.
     python3 live_keeper.py --headless
     python3 live_keeper.py --headless --servo   # also move the arm
 
+With the camera, a fan-header cooler (Pi 5 Active Cooler) runs at full speed
+for as long as this runs, then goes back to temperature control (--no-fan to
+leave it alone).
+
 Laptop replay of a recorded clip (arms on the first frame, prints the result):
 
     python3 live_keeper.py --video recordings/stereo/kick_7m_20261006_161256.avi \
@@ -42,6 +46,7 @@ Laptop replay of a recorded clip (arms on the first frame, prints the result):
 """
 
 import argparse
+import atexit
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -58,6 +63,7 @@ import cv2
 import numpy as np
 
 from camera_stream import Handler
+from robokeeper.cooler import FanBoost, cpu_temp_c
 from robokeeper.live import KickSession
 from robokeeper.servo import ServoArm, arm_angle_deg
 from robokeeper.stereo import LatestPicameraStereo, PreviewBuffer, split_stereo
@@ -223,7 +229,8 @@ class LiveKeeper:
                 "pair_ms_p50": round(float(np.percentile(self.timings, 50)), 1),
                 "pair_ms_p95": round(float(np.percentile(self.timings, 95)), 1),
                 "pair_ms_max": round(float(np.max(self.timings)), 1),
-                "camera_frames_skipped": self.skipped}
+                "camera_frames_skipped": self.skipped,
+                "cpu_temp_c": cpu_temp_c()}
 
     def _complete(self, session):
         """Record a finished session. Caller holds the lock."""
@@ -254,9 +261,10 @@ class LiveKeeper:
         stats = summary["stats"]
         if stats:
             logging.info("Processing: %d pairs at %s pairs/s, %d camera frames skipped; "
-                         "per pair %.1f ms median, %.1f p95, %.1f max", stats["pairs_processed"],
-                         stats["processed_fps"], stats["camera_frames_skipped"],
-                         stats["pair_ms_p50"], stats["pair_ms_p95"], stats["pair_ms_max"])
+                         "per pair %.1f ms median, %.1f p95, %.1f max; CPU %s C",
+                         stats["pairs_processed"], stats["processed_fps"],
+                         stats["camera_frames_skipped"], stats["pair_ms_p50"],
+                         stats["pair_ms_p95"], stats["pair_ms_max"], stats["cpu_temp_c"])
         if self.args.runs_dir:
             self.args.runs_dir.mkdir(parents=True, exist_ok=True)
             path = self.args.runs_dir / f"kick_{datetime.now():%Y%m%d_%H%M%S}.json"
@@ -541,6 +549,8 @@ def main():
     parser.add_argument("--armed-preview-fps", type=float, default=3,
                         help="Preview rate while tracking (0 = off, frees CPU for tracking)")
     parser.add_argument("--opencv-threads", type=int, default=2)
+    parser.add_argument("--no-fan", action="store_true",
+                        help="Leave the cooler under the kernel's temperature control")
     args = parser.parse_args()
     if args.headless and args.record:
         parser.error("--headless measures tracking alone; drop --record")
@@ -554,6 +564,9 @@ def main():
                         datefmt="%H:%M:%S")
     cv2.setNumThreads(args.opencv_threads)
     calibration = StereoCalibration.load(args.calibration)
+    fan = None if args.video or args.no_fan else FanBoost()
+    if fan and fan.start():
+        atexit.register(fan.close)  # also when startup fails before the finally below
     if args.video:
         source = ReplaySource(args.video, args.timestamps)
     else:
@@ -607,6 +620,8 @@ def main():
             arm.close()
         if keeper.encode_pool:
             keeper.encode_pool.shutdown()
+        if fan:
+            fan.close()
     if args.no_serve and not args.headless:
         print(json.dumps(keeper.status()["history"][:1], indent=1))
 
