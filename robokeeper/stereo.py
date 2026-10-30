@@ -137,6 +137,11 @@ class LatestPicameraStereo:
                 return None
             return self.sequence, *self.latest
 
+    def set_exposure(self, exposure_us, gain):
+        """Fixed manual exposure; frames report it in metadata once applied."""
+        self.camera.set_controls({"AeEnable": False, "ExposureTime": int(exposure_us),
+                                  "AnalogueGain": float(gain)})
+
     def close(self):
         self.running = False
         try:
