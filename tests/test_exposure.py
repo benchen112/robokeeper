@@ -8,8 +8,8 @@ from robokeeper.exposure import calibrate_exposure
 class FakeCamera:
     """Linear sensor: level = scene * exposure * gain; new settings apply 2 frames late."""
 
-    def __init__(self, scene, bright_spot=0.):
-        self.scene, self.bright_spot = scene, bright_spot
+    def __init__(self, scene, bright_spot=0., white=235):
+        self.scene, self.bright_spot, self.white = scene, bright_spot, white
         self.pending, self.applied, self.sequence = [], (2000, 8.), 0
 
     def set_exposure(self, exposure_us, gain):
@@ -22,7 +22,7 @@ class FakeCamera:
         exposure_us, gain = self.applied
         frame = np.full((80, 160), self.scene * exposure_us * gain)
         frame[:, :int(160 * self.bright_spot)] *= 4  # e.g. a window
-        frame = np.clip(frame, 0, 255).astype(np.uint8)
+        frame = np.clip(frame, 16, self.white).astype(np.uint8)  # limited range
         return self.sequence, frame, 0., 0., {"exposure_us": exposure_us, "analogue_gain": gain}
 
 
@@ -34,6 +34,22 @@ class ExposureTests(unittest.TestCase):
         self.assertAlmostEqual(level, 120, delta=120 * .12)
         self.assertEqual(gain, 8.)
         self.assertLess(exposure_us, 3000)
+
+    def test_overexposed_limited_range_frame_goes_darker(self):
+        # The Pi's failed run: mean 225 at 2000 us, gain 8, white at 235.
+        camera = FakeCamera(scene=300 / (2000 * 8))
+        exposure_us, gain, level, clipped, converged = calibrate_exposure(camera, target=120)
+        self.assertTrue(converged)
+        self.assertAlmostEqual(level, 120, delta=120 * .12)
+        self.assertLess(exposure_us, 1000)
+        self.assertLessEqual(clipped, .02)
+
+    def test_too_bright_without_saturation_goes_darker(self):
+        camera = FakeCamera(scene=200 / (2000 * 8))
+        exposure_us, _, level, _, converged = calibrate_exposure(camera, target=120)
+        self.assertTrue(converged)
+        self.assertAlmostEqual(level, 120, delta=120 * .12)
+        self.assertLess(exposure_us, 2000)
 
     def test_dark_scene_caps_exposure_then_raises_gain(self):
         camera = FakeCamera(scene=80 / (3000 * 8))  # needs gain ~12

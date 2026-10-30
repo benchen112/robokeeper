@@ -599,6 +599,13 @@ def main():
                         "%.1f%% clipped%s", "calibrated" if converged else "at its limits",
                         exposure_us, gain, level, args.target_brightness, clipped * 100,
                         "" if converged else "; scene too dark/bright for the caps")
+            sample = source.read(0)
+            if sample is not None and args.runs_dir:
+                # A look at the calibrated view, since headless runs show no image.
+                args.runs_dir.mkdir(parents=True, exist_ok=True)
+                check = args.runs_dir / "camera_check.jpg"
+                cv2.imwrite(str(check), cv2.resize(sample[1], (1280, 400), interpolation=cv2.INTER_AREA))
+                logging.info("Saved %s (calibrated view, both eyes)", check)
     arm = None
     if args.servo or args.servo_dry_run:
         arm = ServoArm(args.servo_pin, min_pulse_us=args.servo_min_us,

@@ -15,6 +15,9 @@ target, the brightest setting that does not clip is used instead.
 
 import numpy as np
 
+# The Camarray YUV stream is limited range: white is 235, not 255.
+SATURATED = 230
+
 
 def _measure(source, sequence, exposure_us, gain, settle_frames=12):
     """Mean level and clipped fraction once frames report the requested settings."""
@@ -32,12 +35,12 @@ def _measure(source, sequence, exposure_us, gain, settle_frames=12):
             continue
         pixels = frame[::4, ::4]
         levels.append(float(pixels.mean()))
-        clipped.append(float((pixels >= 250).mean()))
+        clipped.append(float((pixels >= SATURATED).mean()))
         if len(levels) == 2:
             break
     if not levels:  # Settings never reported as applied; use the latest frame anyway.
         pixels = frame[::4, ::4]
-        levels, clipped = [float(pixels.mean())], [float((pixels >= 250).mean())]
+        levels, clipped = [float(pixels.mean())], [float((pixels >= SATURATED).mean())]
     return sequence, float(np.mean(levels)), float(np.mean(clipped))
 
 
@@ -62,7 +65,7 @@ def calibrate_exposure(source, *, exposure_us=2000, gain=8.0, target=120, max_ex
         if clipped > max_clipped:
             ratio = min(ratio, .7)
         light = min(current * float(np.clip(ratio, .25, 4.)), ceiling * .9)
-        if clipped <= max_clipped and light <= current * 1.03:
+        if ratio > 1 and clipped <= max_clipped and light <= current * 1.03:
             return exposure_us, gain, level, clipped, True  # As bright as clipping allows.
         new_exposure = round(float(np.clip(light / preferred_gain, min_exposure_us, max_exposure_us)))
         new_gain = round(float(np.clip(light / new_exposure, min_gain, max_gain)), 2)
