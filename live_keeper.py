@@ -264,6 +264,8 @@ class LiveKeeper:
         else:
             logging.info("Result (%s): no crossing predicted; %d measurements",
                          session.finished, summary["measurements"])
+        if summary["calibration_mismatch"]:
+            logging.warning("%s", summary["calibration_mismatch"])
         stats = summary["stats"]
         if stats:
             logging.info("Processing: %d pairs at %s pairs/s, %d camera frames skipped; "
@@ -575,6 +577,9 @@ def main():
             args.swap_eyes = True
             logging.info("Clip is labelled swap_eyes; swapping left and right halves")
     else:
+        if calibration.swap_eyes and not args.swap_eyes:
+            args.swap_eyes = True
+            logging.info("Calibration says the eyes arrive swapped (cabling); swapping left and right")
         source = open_calibrated_camera(args)
         if args.exposure_us is not None:
             sample = source.read(0)

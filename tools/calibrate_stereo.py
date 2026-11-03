@@ -14,7 +14,21 @@ of a printed checkerboard held at many angles and distances, e.g.
     python3 tools/calibrate_stereo.py checkerboard recordings/stereo/board_*.avi \
         --inner-corners 9x6 --square-mm 25
 
-Both write a StereoCalibration JSON (default calibration/stereo.json).
+``roll``: after moving the cameras (height, tilt, aim, or reseated cables),
+refit the eye order, the offsets between the eyes, the horizon and the cameras'
+height from a ball rolled along the ground toward the cameras. Focal length and
+baseline are kept. On the Pi, with the live camera (exposure is calibrated as
+live_keeper.py does it); roll the ball from far away toward the cameras through
+both views, 2-3 times, while it runs:
+
+    python3 tools/calibrate_stereo.py roll
+
+or from recorded clips, optionally with the measured crossing x (meters, x
+right as seen from the camera, from the midpoint between the lenses) to check:
+
+    python3 tools/calibrate_stereo.py roll recordings/stereo/kick_a.avi:-1.05 kick_b.avi
+
+All write a StereoCalibration JSON (default calibration/stereo.json).
 """
 
 import argparse
@@ -22,14 +36,20 @@ import json
 import logging
 from pathlib import Path
 import sys
+import time
+from types import SimpleNamespace
 
 import cv2
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from robokeeper.exposure import add_exposure_arguments, open_calibrated_camera  # noqa: E402
+from robokeeper.live import KickSession  # noqa: E402
 from robokeeper.stereo import split_stereo  # noqa: E402
-from robokeeper.stereo3d import StereoCalibration, fit_kick_calibration, read_stereo_track  # noqa: E402
+from robokeeper.stereo3d import (StereoCalibration, fit_kick_calibration, fit_roll_calibration,  # noqa: E402
+                                 read_stereo_track, touches_border)
+from track_ball import load_timestamps  # noqa: E402
 
 
 def find_board(gray, pattern):
@@ -125,6 +145,107 @@ def video_frames(path, every):
         video.release()
 
 
+def track_halves(frames, eye_size):
+    """Track both halves as captured (no eye swap): [(timestamp, half_a, half_b)]."""
+    from track_stereo import make_tracker
+
+    # Same tracker as the live run, but new balls may be acquired at any height:
+    # the old horizon row may be wrong, which is why this is being run.
+    options = SimpleNamespace(detector="hybrid", min_radius=3, max_radius=None,
+                              no_auto_floor=False, no_appearance_verifier=False,
+                              moving_camera=False, min_ball_row=None, max_gap_s=0.4)
+    trackers = [make_tracker(options)[0] for _ in range(2)]
+    return [(timestamp, *(tracker.process(view, timestamp)
+                          for tracker, view in zip(trackers, split_stereo(gray, eye_size))))
+            for gray, timestamp in frames]
+
+
+def both_eyes(results, eye_size):
+    confirmed = lambda r: r.state == "confirmed" and r.observed and r.center is not None
+    return [(a.center, a.radius, b.center, b.radius) for _, a, b in results
+            if confirmed(a) and confirmed(b)
+            and not any(touches_border(r.center, r.radius, eye_size) for r in (a, b))]
+
+
+def clip_frames(path):
+    video = cv2.VideoCapture(str(path))
+    if not video.isOpened():
+        raise RuntimeError(f"Cannot open video {path}")
+    timestamps = load_timestamps(Path(path).with_suffix(".csv"),
+                                 round(video.get(cv2.CAP_PROP_FRAME_COUNT)))
+    try:
+        for timestamp in timestamps:
+            ok, frame = video.read()
+            if not ok:
+                break
+            yield (cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if frame.ndim == 3 else frame), timestamp
+    finally:
+        video.release()
+
+
+def camera_frames(args, eye_size):
+    args.eye_width, args.eye_height = eye_size
+    camera = open_calibrated_camera(args)
+    try:
+        for n in (3, 2, 1):
+            print(f"{n}...", flush=True)
+            time.sleep(1)
+        print(f"ROLL NOW: roll the ball along the ground from far away toward the cameras, "
+              f"through both views, 2-3 times ({args.duration:g} s)", flush=True)
+        sequence, end, report = 0, time.monotonic() + args.duration, time.monotonic() + 5
+        while time.monotonic() < end:
+            sample = camera.read(sequence)
+            if sample is None:
+                raise RuntimeError(camera.error or "No camera frames")
+            sequence, frame, timestamp, _, _ = sample
+            yield frame, timestamp
+            if time.monotonic() > report:
+                print(f"  {end - time.monotonic():.0f} s left", flush=True)
+                report += 5
+        print("STOP", flush=True)
+    finally:
+        camera.close()
+
+
+def parse_roll_clip(value):
+    path, sep, crossing = value.rpartition(":")
+    try:
+        return (Path(path), float(crossing)) if sep and path else (Path(value), None)
+    except ValueError:
+        return Path(value), None
+
+
+def calibrate_roll(args, eye_size):
+    base = StereoCalibration.load(args.calibration)
+    runs = ([(path, crossing, track_halves(clip_frames(path), eye_size)) for path, crossing in args.videos]
+            if args.videos else [("live camera", None, track_halves(camera_frames(args, eye_size), eye_size))])
+    pairs = [pair for _, _, results in runs for pair in both_eyes(results, eye_size)]
+    calibration, diagnostics = fit_roll_calibration(pairs, base, args.ball_radius_m,
+                                                    rolling=not args.not_rolling)
+    checks = []
+    for path, crossing, results in runs:
+        if crossing is None:
+            continue
+        session = KickSession(calibration, max_wait_s=1e9)
+        for timestamp, a, b in results:
+            left, right = (b, a) if calibration.swap_eyes else (a, b)
+            if session.update(timestamp, left, right):
+                break
+        predicted = session.summary()["crossing"]
+        checks.append({"clip": Path(path).name, "measured_x_m": crossing,
+                       "predicted_x_m": predicted and predicted["x_m"],
+                       "error_m": predicted and round(abs(predicted["x_m"] - crossing), 3),
+                       "predicted_height_m": predicted and predicted["height_m"]})
+    if checks:
+        diagnostics["crossing_checks"] = checks
+    print(f"{'':22s} {'before':>10s} {'after':>10s}")
+    for name in ("swap_eyes", "cy", "camera_height_m", "disparity_offset_px", "vertical_offset_px"):
+        old, new = getattr(base, name), getattr(calibration, name)
+        show = lambda v: str(v) if isinstance(v, bool) else f"{v:.3f}" if name.endswith("_m") else f"{v:.1f}"
+        print(f"{name:22s} {show(old):>10s} {show(new):>10s}")
+    return calibration, diagnostics
+
+
 def parse_clip(value):
     path, _, distance = value.rpartition(":")
     if not path:
@@ -148,10 +269,36 @@ def main():
                        help="Inner corners per row x per column, e.g. 9x6 for a 10x7-square board")
     board.add_argument("--square-mm", type=float, required=True, help="Printed square size")
     board.add_argument("--every", type=int, default=6, help="Check every Nth frame")
+    roll = commands.add_parser("roll", help="Refit eye order, aim and height after moving the cameras")
+    roll.add_argument("videos", nargs="*", type=parse_roll_clip, metavar="CLIP.avi[:CROSSING_X_M]",
+                      help="Recorded clips (raw, as captured); none = use the live camera")
+    roll.add_argument("--calibration", type=Path, default=Path("calibration/stereo.json"),
+                      help="Calibration to start from (keeps its focal length and baseline)")
+    roll.add_argument("--duration", type=float, default=20, help="Live camera: seconds to collect")
+    roll.add_argument("--ball-radius-m", type=float, default=0.11)
+    roll.add_argument("--not-rolling", action="store_true",
+                      help="The ball was not on the ground: keep the horizon and camera height")
+    roll.add_argument("--dry-run", action="store_true", help="Show the result without saving it")
+    roll.add_argument("--camera-num", type=int, default=0)
+    roll.add_argument("--tuning-file")
+    roll.add_argument("--fps", type=float, default=60)
+    add_exposure_arguments(roll)
     args = parser.parse_args()
     eye_size = tuple(int(v) for v in args.eye_size.split("x"))
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
+    if args.command == "roll":
+        calibration, diagnostics = calibrate_roll(args, eye_size)
+        print(json.dumps(diagnostics, indent=2))
+        if diagnostics.get("warning"):
+            logging.warning("%s", diagnostics["warning"])
+        if args.dry_run:
+            logging.info("Dry run: %s not changed", args.output)
+        else:
+            calibration.save(args.output)
+            logging.info("Saved to %s. On the Pi, commit and push it so the laptop uses it too; "
+                         "git checkout %s undoes it", args.output, args.output)
+        return
     if args.command == "kicks":
         clips = [([pair for _, _, pair in read_stereo_track(path, eye_size)], distance)
                  for path, distance in args.clips]

@@ -50,6 +50,20 @@ class KickSessionTests(unittest.TestCase):
         self.assertAlmostEqual(last["range_m"], np.linalg.norm([last["x_m"], last["height_m"], last["z_m"]]),
                                delta=0.002)
 
+    def test_swapped_eyes_are_reported_as_a_calibration_mismatch(self):
+        session = KickSession(CALIBRATION, max_wait_s=1.0)
+        t = 0.0
+        while not session.update(t, *reversed(eyes(t, (-0.4, 0., 6.0 - 4 * t)))):
+            t += 1 / 30
+        summary = session.summary()
+        self.assertEqual(summary["measurements"], 0)
+        self.assertIn("eyes look swapped", summary["calibration_mismatch"])
+        session = KickSession(CALIBRATION, max_wait_s=1.0)
+        t = 0.0
+        while not session.update(t, *eyes(t, (-0.4, 0., 6.0 - 4 * t))):
+            t += 1 / 30
+        self.assertIsNone(session.summary()["calibration_mismatch"])
+
     def test_no_ball_times_out_without_a_crossing(self):
         session = KickSession(CALIBRATION, max_wait_s=1.0)
         t = 0.0

@@ -7,7 +7,10 @@ import unittest
 import cv2
 import numpy as np
 
-from robokeeper.stereo3d import StereoCalibration, fit_kick_calibration, read_stereo_track
+from dataclasses import replace
+
+from robokeeper.stereo3d import (StereoCalibration, fit_kick_calibration, fit_roll_calibration,
+                                 read_stereo_track)
 from robokeeper.trajectory import TrajectoryPredictor, servo_angle_deg
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
@@ -205,6 +208,49 @@ class CheckerboardTests(unittest.TestCase):
         # The principal point is the least constrained parameter; a few pixels
         # of error shift X by a few cm at 2 m.
         self.assertAlmostEqual(measured.x_m, 0.1, delta=0.04)
+
+
+class RollCalibrationTests(unittest.TestCase):
+    def rolled(self, truth, rng):
+        """Captured halves (a = left half) for balls rolled from ~10 m to 2 m."""
+        pairs = []
+        for x0, vx in ((-1.2, .1), (.3, .15), (1.0, -.1)):
+            for z in np.linspace(10, 2, 30):
+                point = (x0 + vx * (10 - z), 0.0, z)  # rolling: height 0 at the ball's center
+                left, right = truth.project(point)
+                radius = truth.focal_px * .11 / z
+                noise = lambda xy: tuple(np.add(xy, rng.normal(0, .5, 2)))
+                left, right = noise(left), noise(right)
+                pairs.append((right, radius, left, radius) if truth.swap_eyes else (left, radius, right, radius))
+        return pairs
+
+    def test_recovers_moved_and_swapped_cameras_and_height(self):
+        rng = np.random.default_rng(3)
+        old = StereoCalibration(focal_px=1263, cx=640, cy=310, baseline_m=.30, vertical_offset_px=-33)
+        for swap, height in ((True, .02), (False, .60)):
+            with self.subTest(swap=swap, camera_height=height):
+                truth = replace(old, cy=420, camera_height_m=height, disparity_offset_px=60,
+                                vertical_offset_px=70, swap_eyes=swap)
+                calibration, diagnostics = fit_roll_calibration(self.rolled(truth, rng), old)
+                self.assertEqual(calibration.swap_eyes, swap)
+                self.assertAlmostEqual(calibration.disparity_offset_px, 60, delta=2)
+                self.assertAlmostEqual(calibration.vertical_offset_px, 70, delta=1)
+                self.assertAlmostEqual(calibration.cy, 420, delta=3)
+                self.assertAlmostEqual(calibration.camera_height_m, height, delta=.03)
+                self.assertNotIn("warning", diagnostics)
+                left, right = truth.project((.5, 0., 5.))
+                point = calibration.triangulate(left, right)
+                self.assertAlmostEqual(point.height_m, 0, delta=.03)
+                self.assertAlmostEqual(point.z_m, 5, delta=.3)
+
+    def test_ball_that_does_not_approach_is_refused(self):
+        truth = replace(CALIBRATION, swap_eyes=False)
+        pairs = []
+        for x in np.linspace(-1, 1, 30):
+            left, right = truth.project((x, 0., 6.))
+            pairs.append((left, 20., right, 20.))
+        with self.assertRaisesRegex(ValueError, "barely changed size"):
+            fit_roll_calibration(pairs, CALIBRATION)
 
 
 if __name__ == "__main__":

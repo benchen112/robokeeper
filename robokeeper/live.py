@@ -55,6 +55,9 @@ class KickSession:
         self.first_prediction = None
         self.prediction = None
         self.finished = None  # reason, once done
+        # Pairs with the whole ball confirmed in both eyes, how many of those the
+        # calibration rejected, and how many would triangulate with the eyes swapped.
+        self.stereo = {"both_eyes": 0, "rejected": 0, "work_swapped": 0}
 
     @property
     def state(self):
@@ -72,8 +75,13 @@ class KickSession:
         if _confirmed(left) and _confirmed(right) and not any(
                 touches_border(r.center, r.radius, self.calibration.image_size)
                 for r in (left, right)):
-            point = self.calibration.triangulate(left.center, right.center,
-                                                 radius_px=(left.radius + right.radius) / 2)
+            radius = (left.radius + right.radius) / 2
+            point = self.calibration.triangulate(left.center, right.center, radius_px=radius)
+            self.stereo["both_eyes"] += 1
+            if point is None or point.z_m <= 0:
+                self.stereo["rejected"] += 1
+                swapped = self.calibration.triangulate(right.center, left.center, radius_px=radius)
+                self.stereo["work_swapped"] += swapped is not None and swapped.z_m > 0
         if point is not None and point.z_m > 0:
             self.points.append(_point_json(timestamp, point, self.start))
             self.predictor.add(timestamp, (point.x_m, point.height_m, point.z_m))
@@ -103,10 +111,23 @@ class KickSession:
             "last_measurement": self.points[-1] if self.points else None,
             "first_prediction": self.first_prediction,
             "crossing": latest,
+            "stereo": dict(self.stereo),
+            "calibration_mismatch": self.calibration_mismatch(),
             "frame": ("Origin midway between the lenses; x right, height up (0 = rolling-ball "
                       "center with the provisional calibration), z = perpendicular distance "
                       "from the camera plane; range = straight-line distance from the midpoint"),
         }
+
+    def calibration_mismatch(self):
+        """A hint when both eyes kept seeing the ball but the calibration rejected
+        nearly every pair: the cameras moved or the eyes arrive swapped."""
+        seen, rejected = self.stereo["both_eyes"], self.stereo["rejected"]
+        if seen < 10 or rejected < .8 * seen:
+            return None
+        cause = ("the eyes look swapped (swapping them would have worked)"
+                 if self.stereo["work_swapped"] >= .5 * rejected else "the cameras moved")
+        return (f"Both eyes saw the ball in {seen} pairs but the calibration rejected {rejected}: "
+                f"{cause}. Run tools/calibrate_stereo.py roll")
 
     def record(self):
         """Everything for the saved run file."""

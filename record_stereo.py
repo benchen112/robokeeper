@@ -465,7 +465,10 @@ def main():
     add_exposure_arguments(parser)  # same startup calibration as live_keeper.py
     parser.add_argument("--swap-eyes", action="store_true",
                         help="Label clips as swapped (left half = physical right camera); "
-                             "frames are saved as captured and replay tools swap them")
+                             "frames are saved as captured and replay tools swap them. "
+                             "Default: as --calibration says")
+    parser.add_argument("--calibration", type=Path, default=Path("calibration/stereo.json"),
+                        help="Its eye order labels the clips")
     parser.add_argument("--eye-width", type=int, default=1280)
     parser.add_argument("--eye-height", type=int, default=800)
     parser.add_argument("--fps", type=float, default=60)
@@ -490,6 +493,11 @@ def main():
         parser.error("ffmpeg and ffprobe are required (sudo apt install ffmpeg)")
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
+    if not args.swap_eyes and args.calibration.exists():
+        from robokeeper.stereo3d import StereoCalibration
+        args.swap_eyes = StereoCalibration.load(args.calibration).swap_eyes
+        if args.swap_eyes:
+            logging.info("Calibration says the eyes arrive swapped; labelling the clips swap_eyes")
     camera = open_calibrated_camera(args)  # sets args.exposure_us/gain to the result
     try:
         recorder = StereoRecorder(camera, args)

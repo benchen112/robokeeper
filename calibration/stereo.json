@@ -1,15 +1,17 @@
 {
   "focal_px": 1263.080341202505,
   "cx": 640.0,
-  "cy": 453.0,
+  "cy": 447.4133701554456,
   "baseline_m": 0.3,
-  "disparity_offset_px": 66.3,
-  "vertical_offset_px": 71.0,
+  "disparity_offset_px": 65.85710118207848,
+  "vertical_offset_px": 70.59548185690957,
   "image_size": [
     1280,
     800
   ],
-  "method": "provisional_from_kicks",
-  "notes": "Refit 2026-11-03 from three rolling 11 m kicks (recordings/stereo/kick_11m_20261103_*) after the cameras' aim changed: cy from the rolling-ball rows, disparity offset from ball size vs disparity, vertical offset from the eyes' row difference. Predicted crossings were within 0.04-0.19 m of measured. Eye order: left = physical left camera; the cabling as of 2026-11-03 delivers them swapped, so live runs need --swap-eyes until the cables are swapped back. Focal length and baseline unchanged (Oct 6 fit). Replace with a checkerboard calibration for accurate 3D.",
-  "rectification": null
+  "method": "provisional_from_roll",
+  "notes": "Eye order, offsets, horizon and camera height refit from a rolled ball (tools/calibrate_stereo.py roll); focal length and baseline kept from the previous calibration. Assumes parallel-ish cameras and no lens distortion; a checkerboard calibration is more accurate.",
+  "rectification": null,
+  "camera_height_m": 0.02362485703446207,
+  "swap_eyes": true
 }

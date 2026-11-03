@@ -4,7 +4,7 @@ World frame: origin midway between the two lenses, X to the right, height up
 and Z forward (depth). The plane Z = 0 is the camera plane the ball crosses.
 """
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 import json
 from pathlib import Path
 
@@ -28,7 +28,11 @@ class StereoCalibration:
     ``vertical_offset_px`` is left y minus right y and ``disparity_offset_px``
     is the disparity of a point at infinity; both are zero after checkerboard
     rectification, whose per-eye undistort/rectify parameters are stored in
-    ``rectification``.
+    ``rectification``. ``camera_height_m`` is added to triangulated heights:
+    with ``cy`` at the true horizon it is the cameras' height above a rolling
+    ball's center, so height 0 stays the rolling-ball center at any mount
+    height. ``swap_eyes`` means the camera delivers the physical right camera
+    in the left half of the packed frame; offsets are for the physical order.
     """
 
     focal_px: float
@@ -41,6 +45,8 @@ class StereoCalibration:
     method: str = "provisional"
     notes: str = ""
     rectification: dict | None = field(default=None, compare=False)
+    camera_height_m: float = 0.0
+    swap_eyes: bool = False
 
     def __post_init__(self):
         if not self.focal_px > 0 or not self.baseline_m > 0:
@@ -77,7 +83,7 @@ class StereoCalibration:
         z = self.focal_px * self.baseline_m / disparity
         return Point3D(
             x_m=z * ((xl + xr + self.disparity_offset_px) / 2 - self.cx) / self.focal_px,
-            height_m=-z * ((yl + yr) / 2 - self.cy) / self.focal_px,
+            height_m=self.camera_height_m - z * ((yl + yr) / 2 - self.cy) / self.focal_px,
             z_m=z, disparity_px=disparity)
 
     def project(self, point):
@@ -85,7 +91,7 @@ class StereoCalibration:
         if self.rectification is not None:
             raise ValueError("project() supports the provisional model only")
         x, height, z = point
-        y = self.cy - self.focal_px * height / z
+        y = self.cy - self.focal_px * (height - self.camera_height_m) / z
         left = (self.cx + self.focal_px * (x + self.baseline_m / 2) / z, y)
         right = (self.cx + self.focal_px * (x - self.baseline_m / 2) / z
                  - self.disparity_offset_px, y - self.vertical_offset_px)
@@ -191,4 +197,74 @@ def fit_kick_calibration(clips, baseline_m, image_size=(1280, 800), start_frames
         "ball_center_below_camera_m": round(float(slope * baseline_m), 3),
         "horizontal_fov_deg": round(float(np.degrees(2 * np.arctan(image_size[0] / 2 / focal))), 1),
     }
+    return calibration, diagnostics
+
+
+def fit_roll_calibration(pairs, base, ball_radius_m=0.11, rolling=True, min_pairs=20):
+    """Refit how the two cameras are aimed from a ball rolled toward them.
+
+    ``pairs`` are ``(a_xy, a_radius, b_xy, b_radius)`` with ``a`` the left half
+    of the packed frame as captured (no swap), for frames where both halves see
+    the whole ball. Focal length and baseline come from ``base`` (they do not
+    change when the rig is moved); refit are the eye order (the sign of the
+    parallax: disparity must grow as the ball, and its radius, grows), the
+    disparity offset (disparity vs. the ball size's ``baseline * r / R``), the
+    vertical offset (row difference) and, for a ball rolling on the ground, the
+    horizon row and the cameras' height above the ball's center. Returns the
+    calibration and a diagnostics dict.
+    """
+    if base.rectification is not None:
+        raise ValueError("This calibration is checkerboard-rectified; after moving the "
+                         "cameras, redo the checkerboard calibration")
+    rows = np.array([(ax, ay, ar, bx, by, br) for (ax, ay), ar, (bx, by), br in pairs], np.float64)
+    if len(rows) < min_pairs:
+        raise ValueError(f"Only {len(rows)} pairs with the ball in both eyes; need {min_pairs}. "
+                         "Roll the ball toward the cameras through both views")
+    radius = (rows[:, 2] + rows[:, 5]) / 2
+    # The same object in both eyes: similar size and a consistent row difference.
+    keep = np.minimum(rows[:, 2], rows[:, 5]) / np.maximum(rows[:, 2], rows[:, 5]) > .7
+    dy = rows[:, 1] - rows[:, 4]
+    keep &= np.abs(dy - np.median(dy[keep])) <= np.maximum(8., .5 * radius)
+    rows, radius = rows[keep], radius[keep]
+    if len(rows) < min_pairs:
+        raise ValueError(f"Only {len(rows)} consistent pairs; need {min_pairs}")
+    if radius.max() / radius.min() < 1.5:
+        raise ValueError(f"The ball barely changed size ({radius.min():.0f}-{radius.max():.0f} px): "
+                         "roll it from far away toward the cameras")
+    expected = base.baseline_m * radius / ball_radius_m  # disparity at the size's distance
+    raw = rows[:, 0] - rows[:, 3]
+    slope = float(np.polyfit(expected, raw, 1)[0])
+    swap = slope < 0
+    left, right = (rows[:, 3:], rows[:, :3]) if swap else (rows[:, :3], rows[:, 3:])
+    residual = left[:, 0] - right[:, 0] - expected
+    disparity_offset = float(np.median(residual))
+    vertical = left[:, 1] - right[:, 1]
+    vertical_offset = float(np.median(vertical))
+    disparity = left[:, 0] - right[:, 0] - disparity_offset
+    mean_y = (left[:, 1] + right[:, 1] + vertical_offset) / 2
+    cy, camera_height = base.cy, base.camera_height_m
+    if rolling:
+        # A ball at constant height: row = horizon + (camera above ball / baseline) * disparity.
+        k, cy = (float(v) for v in np.polyfit(disparity, mean_y, 1))
+        camera_height = k * base.baseline_m
+    spread = lambda v: round(float(np.percentile(v, 75) - np.percentile(v, 25)), 1)
+    calibration = replace(
+        base, cy=cy, camera_height_m=camera_height, disparity_offset_px=disparity_offset,
+        vertical_offset_px=vertical_offset, swap_eyes=bool(swap), method="provisional_from_roll",
+        notes=("Eye order, offsets" + (", horizon and camera height" if rolling else "")
+               + " refit from a rolled ball (tools/calibrate_stereo.py roll); focal length and "
+               "baseline kept from the previous calibration. Assumes parallel-ish cameras and "
+               "no lens distortion; a checkerboard calibration is more accurate."))
+    diagnostics = {
+        "pairs_used": int(len(rows)), "pairs_dropped": int((~keep).sum()),
+        "ball_radius_px": [round(float(radius.min()), 1), round(float(radius.max()), 1)],
+        "eyes_swapped": bool(swap), "parallax_slope": round(abs(slope), 2),
+        "disparity_offset_spread_px": spread(residual), "vertical_offset_spread_px": spread(vertical),
+    }
+    if rolling:
+        diagnostics["camera_above_ball_center_m"] = round(camera_height, 3)
+    if not .6 < abs(slope) < 1.5:
+        diagnostics["warning"] = ("Parallax does not match the ball's size change (slope "
+                                  f"{abs(slope):.2f}, expected ~1): check --ball-radius-m, "
+                                  "the baseline, or that one ball was tracked")
     return calibration, diagnostics
