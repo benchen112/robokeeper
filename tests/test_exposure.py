@@ -1,8 +1,11 @@
+import argparse
 import unittest
+from unittest import mock
 
 import numpy as np
 
-from robokeeper.exposure import calibrate_exposure
+from robokeeper.exposure import (add_exposure_arguments, calibrate_exposure,
+                                 open_calibrated_camera)
 
 
 class FakeCamera:
@@ -73,6 +76,34 @@ class ExposureTests(unittest.TestCase):
         self.assertLessEqual(clipped, .02)
         self.assertLess(exposure_us, 2000)
         self.assertGreater(level, 80)
+
+
+class OpenCalibratedCameraTests(unittest.TestCase):
+    def open(self, *argv):
+        parser = argparse.ArgumentParser()
+        add_exposure_arguments(parser)
+        args = parser.parse_args(argv)
+        args.eye_width, args.eye_height, args.fps, args.camera_num, args.tuning_file = 1280, 800, 60, 0, None
+        opened = []
+        def fake_camera(width, height, fps, camera_num, tuning_file, exposure_us, gain):
+            opened.append((exposure_us, gain))
+            camera = FakeCamera(scene=225 / (2000 * 8))
+            camera.close = lambda: None
+            return camera
+        with mock.patch("robokeeper.stereo.LatestPicameraStereo", fake_camera):
+            open_calibrated_camera(args)
+        return args, opened
+
+    def test_defaults_calibrate_and_record_the_result(self):
+        args, opened = self.open()
+        self.assertEqual(opened, [(2000, 8.0)])
+        self.assertLess(args.exposure_us, 2000)  # Calibrated darker, and kept for the clip
+        self.assertEqual(args.gain, 8.0)
+
+    def test_given_exposure_is_used_as_is(self):
+        args, opened = self.open("--exposure-us", "500", "--gain", "4")
+        self.assertEqual(opened, [(500, 4.0)])
+        self.assertEqual((args.exposure_us, args.gain), (500, 4.0))
 
 
 if __name__ == "__main__":

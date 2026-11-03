@@ -68,10 +68,11 @@ import numpy as np
 
 from camera_stream import Handler
 from robokeeper.cooler import FanBoost, cpu_temp_c
-from robokeeper.exposure import calibrate_exposure
+from robokeeper.exposure import (add_exposure_arguments, check_exposure_arguments,
+                                 open_calibrated_camera)
 from robokeeper.live import KickSession
 from robokeeper.servo import ServoArm, arm_angle_deg
-from robokeeper.stereo import LatestPicameraStereo, PreviewBuffer, split_stereo
+from robokeeper.stereo import PreviewBuffer, split_stereo
 from record_stereo import StereoClip
 from robokeeper.stereo3d import StereoCalibration
 from track_ball import annotate, load_timestamps
@@ -509,16 +510,7 @@ def main():
     parser.add_argument("--eye-width", type=int, default=1280)
     parser.add_argument("--eye-height", type=int, default=800)
     parser.add_argument("--fps", type=float, default=60)
-    parser.add_argument("--exposure-us", type=int,
-                        help="Locked exposure (default: calibrate at startup, then lock)")
-    parser.add_argument("--gain", type=float, default=8.0,
-                        help="Analogue gain; calibration raises it only past --max-exposure-us")
-    parser.add_argument("--target-brightness", type=float, default=120,
-                        help="Startup calibration: mean pixel level to aim for (0-255)")
-    parser.add_argument("--max-exposure-us", type=int, default=3000,
-                        help="Startup calibration: longest exposure (motion blur) before more gain")
-    parser.add_argument("--auto-exposure", action="store_true",
-                        help="Camera's continuous auto exposure (changes during a kick)")
+    add_exposure_arguments(parser)
     parser.add_argument("--tuning-file", help="Optional Picamera2 tuning JSON")
     parser.add_argument("--swap-eyes", action="store_true", help="Label the right half as left")
     parser.add_argument("--min-ball-row", type=int,
@@ -569,8 +561,7 @@ def main():
         parser.error("--no-serve is for replay with --video --autostart")
     args.no_serve = args.no_serve or args.headless
     args.autostart = args.autostart or bool(args.headless and args.video)
-    if not args.auto_exposure and max(args.exposure_us or 0, args.max_exposure_us) > 1e6 / args.fps:
-        parser.error("--exposure-us and --max-exposure-us must fit within the frame period")
+    check_exposure_arguments(parser, args)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s",
                         datefmt="%H:%M:%S")
     cv2.setNumThreads(args.opencv_threads)
@@ -581,24 +572,8 @@ def main():
     if args.video:
         source = ReplaySource(args.video, args.timestamps)
     else:
-        calibrate = not args.auto_exposure and args.exposure_us is None
-        start_us = min(2000, args.max_exposure_us) if calibrate else args.exposure_us
-        source = LatestPicameraStereo(
-            args.eye_width * 2, args.eye_height, args.fps, args.camera_num, args.tuning_file,
-            None if args.auto_exposure else start_us, 1.0 if args.auto_exposure else args.gain)
-        if calibrate:
-            try:
-                exposure_us, gain, level, clipped, converged = calibrate_exposure(
-                    source, exposure_us=start_us, gain=args.gain, target=args.target_brightness,
-                    max_exposure_us=args.max_exposure_us)
-            except BaseException:
-                source.close()
-                raise
-            logging.log(logging.INFO if converged else logging.WARNING,
-                        "Exposure %s: %d us, gain %.2f -> brightness %.0f (target %.0f), "
-                        "%.1f%% clipped%s", "calibrated" if converged else "at its limits",
-                        exposure_us, gain, level, args.target_brightness, clipped * 100,
-                        "" if converged else "; scene too dark/bright for the caps")
+        source = open_calibrated_camera(args)
+        if args.exposure_us is not None:
             sample = source.read(0)
             if sample is not None and args.runs_dir:
                 # A look at the calibrated view, since headless runs show no image.

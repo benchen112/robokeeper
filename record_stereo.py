@@ -8,6 +8,11 @@ Every captured pair is JPEG-encoded on worker threads and remuxed (no
 re-encode) into an MJPEG AVI that ``track_stereo.py --video`` can replay. A
 same-name CSV holds sensor timestamps so replay uses real capture times. After
 recording stops, an H.264 MP4 copy is made for viewing in a browser or VS Code.
+
+Exposure is calibrated at startup exactly as live_keeper.py does it (same code
+and defaults), then locked, so a clip matches what live tracking would see.
+The chosen values are logged and saved in the clip's JSON; pass them back as
+--exposure-us/--gain to reuse them exactly.
 """
 
 import argparse
@@ -30,6 +35,8 @@ import cv2
 import numpy as np
 
 from record_camera import Handler, safe_name
+from robokeeper.exposure import (add_exposure_arguments, check_exposure_arguments,
+                                 open_calibrated_camera)
 
 
 def encode(frame, quality):
@@ -446,8 +453,7 @@ def main():
                         help="With --duration: seconds of preview before recording starts")
     parser.add_argument("--camera-num", type=int, default=0)
     parser.add_argument("--tuning-file", help="Optional Picamera2 tuning JSON filename/path")
-    parser.add_argument("--exposure-us", type=int, help="Lock exposure to reduce motion blur")
-    parser.add_argument("--gain", type=float, default=1.0, help="Analogue gain with --exposure-us")
+    add_exposure_arguments(parser)  # same startup calibration as live_keeper.py
     parser.add_argument("--eye-width", type=int, default=1280)
     parser.add_argument("--eye-height", type=int, default=800)
     parser.add_argument("--fps", type=float, default=60)
@@ -459,7 +465,7 @@ def main():
     parser.add_argument("--keep-mjpg", action="store_true", help="Keep the raw JPEG stream")
     args = parser.parse_args()
     for name in ("eye_width", "eye_height", "fps", "preview_fps", "encoder_threads",
-                 "duration", "exposure_us", "gain"):
+                 "duration", "exposure_us", "gain", "max_exposure_us", "target_brightness"):
         value = getattr(args, name)
         if value is not None and (not math.isfinite(value) or value <= 0):
             parser.error(f"--{name.replace('_', '-')} must be positive and finite")
@@ -467,19 +473,12 @@ def main():
         parser.error("--quality must be 1-100 and --countdown non-negative")
     if args.countdown and not args.duration:
         parser.error("--countdown requires --duration")
-    if args.gain != 1 and args.exposure_us is None:
-        parser.error("--gain requires --exposure-us")
-    if args.exposure_us is not None and args.exposure_us > 1e6/args.fps:
-        parser.error("--exposure-us must fit within the requested frame period")
+    check_exposure_arguments(parser, args)
     if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
         parser.error("ffmpeg and ffprobe are required (sudo apt install ffmpeg)")
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
-    from robokeeper.stereo import LatestPicameraStereo
-
-    camera = LatestPicameraStereo(args.eye_width * 2, args.eye_height, args.fps,
-                                  args.camera_num, args.tuning_file,
-                                  args.exposure_us, args.gain)
+    camera = open_calibrated_camera(args)  # sets args.exposure_us/gain to the result
     try:
         recorder = StereoRecorder(camera, args)
         try:

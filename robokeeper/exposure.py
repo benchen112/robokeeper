@@ -74,3 +74,58 @@ def calibrate_exposure(source, *, exposure_us=2000, gain=8.0, target=120, max_ex
         exposure_us, gain = new_exposure, new_gain
     source.set_exposure(exposure_us, gain)
     return exposure_us, gain, level, clipped, False
+
+
+def add_exposure_arguments(parser):
+    """Exposure options shared by live_keeper.py and record_stereo.py, so a clip
+    recorded with the defaults is calibrated exactly as a live run would be."""
+    parser.add_argument("--exposure-us", type=int,
+                        help="Locked exposure (default: calibrate at startup, then lock)")
+    parser.add_argument("--gain", type=float, default=8.0,
+                        help="Analogue gain; calibration raises it only past --max-exposure-us")
+    parser.add_argument("--target-brightness", type=float, default=120,
+                        help="Startup calibration: mean pixel level to aim for (0-255)")
+    parser.add_argument("--max-exposure-us", type=int, default=3000,
+                        help="Startup calibration: longest exposure (motion blur) before more gain")
+    parser.add_argument("--auto-exposure", action="store_true",
+                        help="Camera's continuous auto exposure (changes during a kick)")
+
+
+def check_exposure_arguments(parser, args):
+    if not args.auto_exposure and max(args.exposure_us or 0, args.max_exposure_us) > 1e6 / args.fps:
+        parser.error("--exposure-us and --max-exposure-us must fit within the frame period")
+
+
+def open_calibrated_camera(args):
+    """Open the stereo camera with fixed exposure, calibrating it unless
+    --exposure-us or --auto-exposure was given. args.exposure_us and args.gain
+    are set to what the camera ended up with (None with --auto-exposure)."""
+    import logging
+
+    from .stereo import LatestPicameraStereo
+
+    calibrate = not args.auto_exposure and args.exposure_us is None
+    start_us = min(2000, args.max_exposure_us) if calibrate else args.exposure_us
+    source = LatestPicameraStereo(
+        args.eye_width * 2, args.eye_height, args.fps, args.camera_num, args.tuning_file,
+        None if args.auto_exposure else start_us, 1.0 if args.auto_exposure else args.gain)
+    if args.auto_exposure:
+        args.exposure_us = args.gain = None
+        return source
+    if calibrate:
+        try:
+            exposure_us, gain, level, clipped, converged = calibrate_exposure(
+                source, exposure_us=start_us, gain=args.gain, target=args.target_brightness,
+                max_exposure_us=args.max_exposure_us)
+        except BaseException:
+            source.close()
+            raise
+        logging.log(logging.INFO if converged else logging.WARNING,
+                    "Exposure %s: %d us, gain %.2f -> brightness %.0f (target %.0f), "
+                    "%.1f%% clipped%s", "calibrated" if converged else "at its limits",
+                    exposure_us, gain, level, args.target_brightness, clipped * 100,
+                    "" if converged else "; scene too dark/bright for the caps")
+        logging.info("To reuse these settings exactly: --exposure-us %d --gain %.2f",
+                     exposure_us, gain)
+        args.exposure_us, args.gain = exposure_us, gain
+    return source
