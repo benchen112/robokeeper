@@ -72,7 +72,7 @@ from robokeeper.exposure import (add_exposure_arguments, check_exposure_argument
                                  open_calibrated_camera)
 from robokeeper.live import KickSession
 from robokeeper.servo import ServoArm, arm_angle_deg
-from robokeeper.stereo import PreviewBuffer, split_stereo
+from robokeeper.stereo import PreviewBuffer, clip_swaps_eyes, split_stereo
 from record_stereo import StereoClip
 from robokeeper.stereo3d import StereoCalibration
 from track_ball import annotate, load_timestamps
@@ -571,6 +571,9 @@ def main():
         atexit.register(fan.close)  # also when startup fails before the finally below
     if args.video:
         source = ReplaySource(args.video, args.timestamps)
+        if clip_swaps_eyes(args.video) and not args.swap_eyes:
+            args.swap_eyes = True
+            logging.info("Clip is labelled swap_eyes; swapping left and right halves")
     else:
         source = open_calibrated_camera(args)
         if args.exposure_us is not None:

@@ -32,7 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from robokeeper import hybrid, vision  # noqa: E402
 from robokeeper.appearance import BallAppearanceVerifier  # noqa: E402
-from robokeeper.stereo import split_stereo  # noqa: E402
+from robokeeper.stereo import clip_swaps_eyes, split_stereo  # noqa: E402
 from robokeeper.stereo3d import StereoCalibration  # noqa: E402
 from robokeeper.trajectory import TrajectoryPredictor  # noqa: E402
 from track_ball import load_timestamps  # noqa: E402
@@ -150,6 +150,7 @@ def profile_clip(path, calibration, timer, args):
         raise RuntimeError(f"Cannot open {path}")
     count = round(video.get(cv2.CAP_PROP_FRAME_COUNT))
     timestamps = load_timestamps(Path(path).with_suffix(".csv"), count)
+    swap = clip_swaps_eyes(path)
     options = SimpleNamespace(detector="hybrid", min_radius=3, max_radius=None,
                               no_auto_floor=False, no_appearance_verifier=False,
                               moving_camera=args.moving_camera)
@@ -170,7 +171,7 @@ def profile_clip(path, calibration, timer, args):
                     time.sleep(1)
                 paused += time.monotonic() - wait_start
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if frame.ndim == 3 else frame
-            views = split_stereo(gray, calibration.image_size)
+            views = split_stereo(gray, calibration.image_size, swap)
             eyes = []
             for tracker, view in zip(trackers, views):
                 timer.reset()

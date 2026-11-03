@@ -19,7 +19,8 @@ import numpy as np
 
 from camera_stream import Handler
 from robokeeper import AppearanceBallSegmenter, BallTracker, HybridBallSegmenter, MotionBallSegmenter
-from robokeeper.stereo import LatestPicameraStereo, PreviewBuffer, pair_diagnostics, split_stereo
+from robokeeper.stereo import (LatestPicameraStereo, PreviewBuffer, clip_swaps_eyes, pair_diagnostics,
+                               split_stereo)
 from track_ball import (LatestCamera, ReviewWriter, annotate, as_json, load_timestamps,
                         scene_diagnostics)
 
@@ -134,6 +135,9 @@ def main():
                 stack.callback(video.release)
                 if not video.isOpened():
                     raise RuntimeError(f"Cannot open video {args.video}")
+                if clip_swaps_eyes(args.video) and not args.swap_eyes:
+                    args.swap_eyes = True
+                    logging.info("Clip is labelled swap_eyes; swapping left and right halves")
                 fps = video.get(cv2.CAP_PROP_FPS)
                 if not math.isfinite(fps) or fps <= 0:
                     raise RuntimeError("Replay video has no valid FPS")

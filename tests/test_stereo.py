@@ -13,7 +13,7 @@ from unittest.mock import Mock, patch
 import cv2
 import numpy as np
 
-from robokeeper.stereo import LatestPicameraStereo, pair_diagnostics, split_stereo
+from robokeeper.stereo import LatestPicameraStereo, clip_swaps_eyes, pair_diagnostics, split_stereo
 from robokeeper.vision import TrackResult
 
 
@@ -40,6 +40,15 @@ class StereoTests(unittest.TestCase):
             camera.close()
             driver.stop.assert_called_once()
             driver.close.assert_called_once()
+
+    def test_clip_label_marks_swapped_eyes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            video = Path(directory) / "kick.avi"
+            self.assertFalse(clip_swaps_eyes(video))  # no JSON: not swapped
+            video.with_suffix(".json").write_text('{"swap_eyes": true}')
+            self.assertTrue(clip_swaps_eyes(video))
+            video.with_suffix(".json").write_text('{"swap_eyes": false}')
+            self.assertFalse(clip_swaps_eyes(video))
 
     def test_eye_coordinates_and_swap_preserve_pixels(self):
         frame = np.zeros((80, 256), np.uint8)

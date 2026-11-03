@@ -227,6 +227,7 @@ class StereoRecorder:
             "requested_exposure_us": args.exposure_us,
             "requested_gain": args.gain if args.exposure_us else None,
             "encoder_threads": args.encoder_threads, "keep_mjpg": args.keep_mjpg,
+            "swap_eyes": args.swap_eyes,
         }
         self.pool = ThreadPoolExecutor(args.encoder_threads)
         self.condition = threading.Condition()
@@ -462,6 +463,9 @@ def main():
     parser.add_argument("--camera-num", type=int, default=0)
     parser.add_argument("--tuning-file", help="Optional Picamera2 tuning JSON filename/path")
     add_exposure_arguments(parser)  # same startup calibration as live_keeper.py
+    parser.add_argument("--swap-eyes", action="store_true",
+                        help="Label clips as swapped (left half = physical right camera); "
+                             "frames are saved as captured and replay tools swap them")
     parser.add_argument("--eye-width", type=int, default=1280)
     parser.add_argument("--eye-height", type=int, default=800)
     parser.add_argument("--fps", type=float, default=60)

@@ -1,10 +1,21 @@
 """Packed stereo frames and latest-only capture for the Camarray CSI HAT."""
 
+import json
+from pathlib import Path
 import threading
 import time
 
 import cv2
 import numpy as np
+
+
+def clip_swaps_eyes(video_path):
+    """True when a recorded clip's JSON says its halves are swapped (left half =
+    physical right camera), as record_stereo.py --swap-eyes writes."""
+    try:
+        return bool(json.loads(Path(video_path).with_suffix(".json").read_text()).get("swap_eyes"))
+    except (OSError, ValueError, AttributeError):
+        return False
 
 
 def split_stereo(frame, eye_size=(1280, 800), swap=False):
