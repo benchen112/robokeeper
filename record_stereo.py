@@ -442,6 +442,14 @@ class StereoHandler(Handler):
             super().do_GET()
 
 
+def countdown(seconds):
+    """Prints 3... 2... 1... so a kick can be timed to the recording."""
+    end = time.monotonic() + seconds
+    for n in range(math.ceil(seconds), 0, -1):
+        print(f"{n}...", flush=True)
+        time.sleep(max(0., end - (n - 1) - time.monotonic()))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("name", nargs="?", default="stereo",
@@ -488,10 +496,12 @@ def main():
             logging.info("Preview: http://<pi-ip>:%d/", args.port)
             try:
                 if args.duration:
-                    time.sleep(max(args.countdown, 1.0))
+                    countdown(max(args.countdown, 1.0))  # at least 1 s for the camera to settle
                     recorder.start(args.name)
+                    print(f"GO - recording {args.duration:g} s", flush=True)
                     time.sleep(args.duration)
                     recorder.stop("duration")
+                    print("STOP - recording finished, saving the clip", flush=True)
                 else:
                     logging.info("Name and start recordings from the browser; Ctrl+C quits")
                     while recorder.running:
