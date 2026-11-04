@@ -79,6 +79,10 @@ from track_ball import annotate, load_timestamps
 from track_stereo import make_tracker
 
 
+# Segmenter stages timed per eye-frame (robokeeper/hybrid.py); classifier is part of checks.
+STAGES = ("blur", "motion", "floor", "hough", "template", "checks", "classifier", "acquisition")
+
+
 class ReplaySource:
     """A recorded packed stereo clip, read as fast as it is processed."""
 
@@ -135,6 +139,7 @@ class LiveKeeper:
         self.snapshot = None  # latest (views, results) for the preview thread
         self.trails = [deque(maxlen=30), deque(maxlen=30)]
         self.timings = []
+        self.breakdown = []  # per processed pair: frame prep and per-eye stage ms
         self.exposures = []  # (exposure_us, analogue_gain) per processed pair
         self.clip = None
         self.encode_pool = ThreadPoolExecutor(2) if args.record else None
@@ -152,7 +157,7 @@ class LiveKeeper:
                 tracker.reset()
             for trail in self.trails:
                 trail.clear()
-            self.timings, self.exposures = [], []
+            self.timings, self.exposures, self.breakdown = [], [], []
             self.skipped, self.first_ts, self.last_ts = 0, None, None
             self.session = KickSession(self.calibration, max_wait_s=self.args.max_wait_s,
                                        aim=self._aim)
@@ -273,6 +278,18 @@ class LiveKeeper:
                          stats["pairs_processed"], stats["processed_fps"],
                          stats["camera_frames_skipped"], stats["pair_ms_p50"],
                          stats["pair_ms_p95"], stats["pair_ms_max"], stats["cpu_temp_c"])
+        stages = self._stage_summary()
+        for label in ("ball_tracked", "no_ball"):
+            if stages and label in stages:
+                group = stages[label]
+                logging.info("Stages, %s (%d eye-frames), ms mean/p95: %s", label.replace("_", " "),
+                             group["eye_frames"], ", ".join(
+                                 f"{k} {m:.1f}/{p:.1f}" for k, (m, p) in group["ms_mean_p95"].items()
+                                 if p >= .05))
+        if stages:
+            logging.info("Per pair: frame prep %.1f ms, threads + waiting for the slower eye %.1f ms",
+                         stages["per_pair"]["frame_prep_ms_mean"],
+                         stages["per_pair"]["threads_and_slower_eye_wait_ms_mean"])
         if self.args.runs_dir:
             self.args.runs_dir.mkdir(parents=True, exist_ok=True)
             path = self.args.runs_dir / f"kick_{datetime.now():%Y%m%d_%H%M%S}.json"
@@ -282,6 +299,8 @@ class LiveKeeper:
                                            "recording": summary.get("recording"),
                                            "servo_moves": summary["servo_moves"],
                                            "timings_ms": [round(t, 1) for t in self.timings],
+                                           "stage_summary": stages,
+                                           "stage_ms": self.breakdown,
                                            "exposure_us": [e for e, _ in self.exposures],
                                            "analogue_gain": [g for _, g in self.exposures]}) + "\n")
             partial.replace(path)
@@ -297,7 +316,36 @@ class LiveKeeper:
 
     def _track(self, pair):
         tracker, view, timestamp = pair
-        return tracker.process(view, timestamp)
+        tracked = tracker._position is not None  # a ball was being followed coming in
+        start = time.perf_counter()
+        result = tracker.process(view, timestamp)
+        eye = {"ms": round((time.perf_counter() - start) * 1000, 2), "tracked": tracked}
+        eye.update((k, round(v, 2)) for k, v in getattr(tracker.segmenter, "stage_ms", {}).items())
+        return result, eye
+
+    def _stage_summary(self):
+        """Mean and p95 ms per stage, for eye-frames with and without a tracked ball."""
+        if not self.breakdown:
+            return None
+        summary = {}
+        eyes = [eye for pair in self.breakdown for eye in pair["eyes"]]
+        for label, tracked in (("ball_tracked", True), ("no_ball", False)):
+            group = [eye for eye in eyes if eye["tracked"] == tracked]
+            if not group:
+                continue
+            stages = {}
+            for stage in STAGES:
+                values = np.array([eye.get(stage, 0.) for eye in group])
+                stages[stage] = [round(float(values.mean()), 2), round(float(np.percentile(values, 95)), 2)]
+            other = np.array([eye["ms"] - sum(eye.get(k, 0.) for k in STAGES if k != "classifier")
+                              for eye in group])
+            stages["other"] = [round(float(other.mean()), 2), round(float(np.percentile(other, 95)), 2)]
+            summary[label] = {"eye_frames": len(group), "ms_mean_p95": stages}
+        prep = np.array([pair["prep"] for pair in self.breakdown])
+        wait = np.array([pair["pair"] - max(eye["ms"] for eye in pair["eyes"]) for pair in self.breakdown])
+        summary["per_pair"] = {"frame_prep_ms_mean": round(float(prep.mean()), 2),
+                               "threads_and_slower_eye_wait_ms_mean": round(float(wait.mean()), 2)}
+        return summary
 
     def run(self):
         sequence = 0
@@ -312,18 +360,21 @@ class LiveKeeper:
                 previous = sequence
                 sequence, frame, timestamp, _, metadata = sample
                 self.error = None
+                prep_start = time.perf_counter()
                 gray = frame if frame.ndim == 2 else cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
                 views = split_stereo(gray, (self.args.eye_width, self.args.eye_height),
                                      self.args.swap_eyes)
+                prep_ms = (time.perf_counter() - prep_start) * 1000
                 with self.lock:
                     session = self.session if self.session and not self.session.finished else None
                 if session is None:
                     self.snapshot = (views, None)
                     continue
                 start = time.monotonic()
-                results = list(self.pool.map(self._track, [(t, v, timestamp)
+                tracked = list(self.pool.map(self._track, [(t, v, timestamp)
                                                            for t, v in zip(self.trackers, views)]))
                 elapsed_ms = (time.monotonic() - start) * 1000
+                results = [result for result, _ in tracked]
                 with self.lock:
                     if session is not self.session or session.finished:
                         continue  # cancelled or restarted while processing
@@ -332,6 +383,8 @@ class LiveKeeper:
                     self.first_ts = self.first_ts if self.first_ts is not None else timestamp
                     self.last_ts = timestamp
                     self.timings.append(elapsed_ms)
+                    self.breakdown.append({"pair": round(elapsed_ms, 2), "prep": round(prep_ms, 2),
+                                           "eyes": [eye for _, eye in tracked]})
                     self.exposures.append((metadata.get("exposure_us") or 0,
                                            metadata.get("analogue_gain") or 0))
                     if self.clip is not None:

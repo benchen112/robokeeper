@@ -2,6 +2,7 @@
 from collections import deque
 from dataclasses import dataclass
 from math import hypot
+from time import perf_counter
 
 import cv2
 import numpy as np
@@ -128,6 +129,7 @@ class HybridBallSegmenter(AppearanceBallSegmenter):
         self.raw_candidates = ()
         self.acquisition_candidates = ()
         self.ready = False
+        self.stage_ms = {}
         self._locked = False
         self._locked_frames = 0
         self.template_only = False
@@ -255,11 +257,20 @@ class HybridBallSegmenter(AppearanceBallSegmenter):
             count, area = count-inner_count, area-inner_area
         return count/area if area else 0.
 
+    def _timed(self, stage, function, *args):
+        """Run one pipeline stage, adding its milliseconds to ``stage_ms``."""
+        start = perf_counter()
+        result = function(*args)
+        self.stage_ms[stage] = self.stage_ms.get(stage, 0.) + (perf_counter() - start) * 1e3
+        return result
+
     def find_candidates(self, frame):
         if frame.dtype != np.uint8 or frame.ndim not in (2, 3):
             raise ValueError("Expected an 8-bit grayscale or BGR frame")
+        # Coarse per-stage times for this frame (a few timer calls; negligible cost).
+        self.stage_ms = {}
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if frame.ndim == 3 else frame
-        gray = cv2.GaussianBlur(gray, (3, 3), 0)
+        gray = self._timed("blur", cv2.GaussianBlur, gray, (3, 3), 0)
         h, w = gray.shape
         self.max_radius = self.radius_limit or max(self.min_radius, min(h, w) // 4)
         self._gray = gray
@@ -272,9 +283,9 @@ class HybridBallSegmenter(AppearanceBallSegmenter):
             self._last_radius = None
             self._last_observed_timestamp = None
         self._frames += 1
-        valid_motion = self._motion(gray)
+        valid_motion = self._timed("motion", self._motion, gray)
         self.ready = self._frames > 1
-        floor = self.floor_estimator.update(gray) if self.auto_floor else FloorEstimate()
+        floor = self._timed("floor", self.floor_estimator.update, gray) if self.auto_floor else FloorEstimate()
         self.raw_candidates = ()
         self.acquisition_candidates = ()
         self.template_only = False
@@ -284,22 +295,23 @@ class HybridBallSegmenter(AppearanceBallSegmenter):
         # Locked onto a predictable ball, the remembered template finds it near
         # the prediction without Hough. Hough runs on a periodic refresh (radius
         # re-anchoring), and immediately if the template finds nothing usable.
-        template = self._template_proposals(gray) if self._hint is not None else []
+        template = self._timed("template", self._template_proposals, gray) if self._hint is not None else []
         self._locked_frames = self._locked_frames + 1 if self._locked and self._hint is not None else 0
         refresh = (self.locked_hough_interval > 0
                    and self._locked_frames % self.locked_hough_interval == 0)
         skip_hough = bool(template) and self._locked_frames > 0 and not refresh
-        proposals = [] if skip_hough else self._hough_proposals(gray)
+        proposals = [] if skip_hough else self._timed("hough", self._hough_proposals, gray)
         proposals += template + self._border_proposals(w)
-        candidates = self._verify(proposals, gray, floor)
+        candidates = self._timed("checks", self._verify, proposals, gray, floor)
         if skip_hough and not candidates:
-            candidates = self._verify(self._hough_proposals(gray), gray, floor)
+            candidates = self._timed("checks", self._verify,
+                                     self._timed("hough", self._hough_proposals, gray), gray, floor)
             self.template_only = False
         else:
             self.template_only = skip_hough
         candidates.sort(key=lambda c:c.confidence, reverse=True)
         self.raw_candidates = tuple(candidates)
-        self.acquisition_candidates = self._coherent_acquisition(candidates)
+        self.acquisition_candidates = self._timed("acquisition", self._coherent_acquisition, candidates)
         if self._hint is None:
             return self.acquisition_candidates
         return tuple(candidates)
@@ -517,7 +529,7 @@ class HybridBallSegmenter(AppearanceBallSegmenter):
                                                and self._frames-self._last_motion_frame <= 6):
                 continue
             # The classifier is the costliest check, so it runs on survivors only.
-            appearance_margin = self.verifier.score(gray,x,y,radius) if self.verifier else 0.
+            appearance_margin = self._timed("classifier", self.verifier.score, gray, x, y, radius) if self.verifier else 0.
             partial = x-radius < 0 or x+radius > w
             margin_threshold = -.6 if self._hint is not None else (-.6 if radius < 25 or partial else .60)
             above_floor = (self.auto_floor and floor.boundary_y is not None
