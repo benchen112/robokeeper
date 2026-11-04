@@ -124,5 +124,32 @@ class HybridTests(unittest.TestCase):
         self.assertLess(abs(estimate.boundary_y-.475),.04)
 
 
+    def test_floor_search_slows_once_found_and_pauses_while_tracking(self):
+        rng=np.random.default_rng(9)
+        frame=np.full((200,320),90,np.uint8)
+        frame[:95]=rng.integers(30,210,size=(95,320),dtype=np.uint8)
+        cv2.line(frame,(0,95),(319,95),220,2)
+        lines=cv2.HoughLinesP
+        searches=[]
+        def counted(*args,**kwargs):
+            searches.append(1)
+            return lines(*args,**kwargs)
+        cv2.HoughLinesP=counted
+        try:
+            estimator=FloorEstimator()
+            for _ in range(300):
+                estimator.update(frame)
+            # Every 6th frame until three searches agree, then every 120th.
+            self.assertEqual(len(searches),5)
+            self.assertIsNotNone(estimator.estimate.boundary_y)
+            searches.clear()
+            segmenter=HybridBallSegmenter(verify_appearance=False)
+            segmenter.set_tracking_hint((160.,100.),10.,30.)
+            for _ in range(30):
+                segmenter.find_candidates(frame)
+            self.assertEqual(searches,[])
+        finally:
+            cv2.HoughLinesP=lines
+
 if __name__=='__main__':
     unittest.main()

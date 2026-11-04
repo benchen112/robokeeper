@@ -32,17 +32,25 @@ class FloorEstimator:
 
     This estimates a floor-like image region, not a calibrated ground plane.
     Ambiguous scenes produce no estimate. It is only a ranking hint.
+
+    The whole-frame line search costs 5-15 ms, all on one frame, so it runs
+    every ``search_every`` frames until an estimate holds, then only every
+    ``refresh_every`` frames: with a fixed camera the floor does not move.
     """
 
-    def __init__(self):
+    def __init__(self, search_every=6, refresh_every=120):
         self.estimate = FloorEstimate()
         self._history = deque(maxlen=5)
-        self._frames = 0
+        self.search_every = search_every
+        self.refresh_every = refresh_every
+        self._since = None  # frames since the last search; None runs the next one
 
     def update(self, gray):
-        self._frames += 1
-        if self._frames % 6 != 1:
+        every = self.refresh_every if self.estimate.boundary_y is not None else self.search_every
+        if self._since is not None and self._since + 1 < every:
+            self._since += 1
             return self.estimate
+        self._since = 0
         small = cv2.resize(gray, (320, 200), interpolation=cv2.INTER_AREA)
         edges = cv2.Canny(small, 40, 100)
         lines = cv2.HoughLinesP(edges, 1, np.pi / 180, 35,
@@ -285,7 +293,12 @@ class HybridBallSegmenter(AppearanceBallSegmenter):
         self._frames += 1
         valid_motion = self._timed("motion", self._motion, gray)
         self.ready = self._frames > 1
-        floor = self._timed("floor", self.floor_estimator.update, gray) if self.auto_floor else FloorEstimate()
+        # The floor hint ranks new balls; while one is tracked it is not refreshed,
+        # keeping its whole-frame search out of the frames that matter most.
+        floor = (self.floor_estimator.estimate if not self.auto_floor or self._hint is not None
+                 else self._timed("floor", self.floor_estimator.update, gray))
+        if not self.auto_floor:
+            floor = FloorEstimate()
         self.raw_candidates = ()
         self.acquisition_candidates = ()
         self.template_only = False
