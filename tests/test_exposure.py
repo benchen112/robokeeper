@@ -11,8 +11,8 @@ from robokeeper.exposure import (add_exposure_arguments, calibrate_exposure,
 class FakeCamera:
     """Linear sensor: level = scene * exposure * gain; new settings apply 2 frames late."""
 
-    def __init__(self, scene, bright_spot=0., white=235):
-        self.scene, self.bright_spot, self.white = scene, bright_spot, white
+    def __init__(self, scene, bright_spot=0., white=235, spot_gain=4.):
+        self.scene, self.bright_spot, self.white, self.spot_gain = scene, bright_spot, white, spot_gain
         self.pending, self.applied, self.sequence = [], (2000, 8.), 0
 
     def set_exposure(self, exposure_us, gain):
@@ -24,7 +24,7 @@ class FakeCamera:
             self.applied = self.pending.pop(0)[1]
         exposure_us, gain = self.applied
         frame = np.full((80, 160), self.scene * exposure_us * gain)
-        frame[:, :int(160 * self.bright_spot)] *= 4  # e.g. a window
+        frame[:, :int(160 * self.bright_spot)] *= self.spot_gain  # e.g. a window
         frame = np.clip(frame, 16, self.white).astype(np.uint8)  # limited range
         return self.sequence, frame, 0., 0., {"exposure_us": exposure_us, "analogue_gain": gain}
 
@@ -53,6 +53,17 @@ class ExposureTests(unittest.TestCase):
         self.assertTrue(converged)
         self.assertAlmostEqual(level, 120, delta=120 * .12)
         self.assertLess(exposure_us, 2000)
+
+    def test_sunlit_window_is_left_out_instead_of_darkening_the_room(self):
+        # The 2026-11-04 hallway: glass doors far brighter than the room stay
+        # saturated at any exposure; the room should still reach the target.
+        camera = FakeCamera(scene=70 / (2000 * 8), bright_spot=.15, spot_gain=30.)
+        info = {}
+        exposure_us, gain, level, clipped, converged = calibrate_exposure(camera, target=120, info=info)
+        self.assertTrue(converged)
+        self.assertAlmostEqual(level, 120, delta=120 * .12)
+        self.assertGreater(exposure_us, 2000)
+        self.assertAlmostEqual(info["light_source_fraction"], .15, delta=.02)
 
     def test_dark_scene_caps_exposure_then_raises_gain(self):
         camera = FakeCamera(scene=80 / (3000 * 8))  # needs gain ~12

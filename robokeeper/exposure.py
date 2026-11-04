@@ -5,9 +5,10 @@ ball's appearance) that is as short as possible (a kicked ball smears across
 the exposure). So exposure is the control, capped at ``max_exposure_us``; gain
 stays at the preferred value and only rises once exposure hits the cap (or
 falls once exposure is at its minimum). The level is the mean of a subsampled
-frame; ``clipped`` is the fraction of saturated pixels. Clipping sets a ceiling:
-if a bright area (a window, a light) saturates before the mean reaches the
-target, the brightest setting that does not clip is used instead.
+frame; ``clipped`` is the fraction of saturated pixels. Areas that stay saturated
+however short the exposure (windows, sunlit doors) are light sources and are
+left out; any other clipping sets a ceiling, so if a bright area saturates
+before the mean reaches the target, the brightest unclipped setting is used.
 
 ``source`` needs ``read(sequence)`` (as LatestPicameraStereo) and
 ``set_exposure(exposure_us, gain)``.
@@ -20,46 +21,67 @@ SATURATED = 230
 
 
 def _measure(source, sequence, exposure_us, gain, settle_frames=12):
-    """Mean level and clipped fraction once frames report the requested settings."""
-    levels, clipped = [], []
+    """A subsampled frame once frames report the requested settings."""
+    pixels, applied_frames = None, 0
     for _ in range(settle_frames + 2):
         sample = source.read(sequence)
         if sample is None:
-            return sequence, None, None
+            return sequence, None
         sequence, frame, _, _, metadata = sample
+        pixels = frame[::4, ::4]
         reported_us = metadata.get("exposure_us")
         reported_gain = metadata.get("analogue_gain")
         applied = (reported_us is None or abs(reported_us - exposure_us) <= max(20, .03 * exposure_us)) and (
             reported_gain is None or abs(reported_gain - gain) <= max(.1, .03 * gain))
-        if not applied:
-            continue
-        pixels = frame[::4, ::4]
-        levels.append(float(pixels.mean()))
-        clipped.append(float((pixels >= SATURATED).mean()))
-        if len(levels) == 2:
+        applied_frames += applied
+        if applied_frames == 2:
             break
-    if not levels:  # Settings never reported as applied; use the latest frame anyway.
-        pixels = frame[::4, ::4]
-        levels, clipped = [float(pixels.mean())], [float((pixels >= SATURATED).mean())]
-    return sequence, float(np.mean(levels)), float(np.mean(clipped))
+    return sequence, pixels  # Settings never reported as applied: the latest frame anyway.
+
+
+def _level(pixels, ignore):
+    """Mean level and saturated fraction of the pixels that are not light sources."""
+    valid = pixels[~ignore]
+    return float(valid.mean()), float((valid >= SATURATED).mean())
 
 
 def calibrate_exposure(source, *, exposure_us=2000, gain=8.0, target=120, max_exposure_us=3000,
                        min_exposure_us=30, min_gain=1.0, max_gain=16.0, max_clipped=.02,
-                       rounds=8):
-    """Returns (exposure_us, gain, level, clipped, converged); leaves the camera set to them."""
+                       max_light_sources=.25, rounds=8, info=None):
+    """Returns (exposure_us, gain, level, clipped, converged); leaves the camera set to them.
+
+    Pixels still saturated after the light (exposure x gain) dropped 3x are light
+    sources (windows, lamps, sunlit doors): they are left out of the level and the
+    clipping check, so they cannot drag the exposure down, up to
+    ``max_light_sources`` of the frame. ``info``, a dict, receives the fraction
+    left out as ``light_source_fraction``.
+    """
     preferred_gain = gain
     sequence, level, clipped = 0, None, None
-    ceiling = float("inf")  # exposure x gain at which saturation appeared
+    history = []  # (exposure x gain, saturated mask) per round
+    ignore = None
     for _ in range(rounds):
         source.set_exposure(exposure_us, gain)
-        sequence, level, clipped = _measure(source, sequence, exposure_us, gain)
-        if level is None:
+        sequence, pixels = _measure(source, sequence, exposure_us, gain)
+        if pixels is None:
             raise RuntimeError("No camera frames during exposure calibration")
         current = exposure_us * gain
-        if clipped > max_clipped:
-            ceiling = min(ceiling, current)
-        elif abs(level - target) <= target * .12:
+        saturated = pixels >= SATURATED
+        if ignore is None:
+            ignore = np.zeros(saturated.shape, bool)
+        for light, earlier in history:
+            if light >= 3 * current:
+                widened = ignore | (earlier & saturated)
+                if widened.mean() <= max_light_sources:
+                    ignore = widened
+        history.append((current, saturated))
+        level, clipped = _level(pixels, ignore)
+        # Clipping sets a ceiling: the least light at which non-light-source pixels saturated.
+        ceiling = min((light for light, mask in history
+                       if (mask & ~ignore).sum() > max_clipped * (~ignore).sum()), default=float("inf"))
+        if info is not None:
+            info["light_source_fraction"] = round(float(ignore.mean()), 3)
+        if clipped <= max_clipped and abs(level - target) <= target * .12:
             return exposure_us, gain, level, clipped, True
         ratio = target / max(level, 1.)
         if clipped > max_clipped:
@@ -114,9 +136,10 @@ def open_calibrated_camera(args):
         return source
     if calibrate:
         try:
+            info = {}
             exposure_us, gain, level, clipped, converged = calibrate_exposure(
                 source, exposure_us=start_us, gain=args.gain, target=args.target_brightness,
-                max_exposure_us=args.max_exposure_us)
+                max_exposure_us=args.max_exposure_us, info=info)
         except BaseException:
             source.close()
             raise
@@ -125,6 +148,9 @@ def open_calibrated_camera(args):
                     "%.1f%% clipped%s", "calibrated" if converged else "at its limits",
                     exposure_us, gain, level, args.target_brightness, clipped * 100,
                     "" if converged else "; scene too dark/bright for the caps")
+        if info.get("light_source_fraction"):
+            logging.info("Left %.0f%% of the frame out as light sources (saturated at any exposure)",
+                         info["light_source_fraction"] * 100)
         logging.info("To reuse these settings exactly: --exposure-us %d --gain %.2f",
                      exposure_us, gain)
         args.exposure_us, args.gain = exposure_us, gain
