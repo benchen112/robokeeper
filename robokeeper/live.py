@@ -32,6 +32,7 @@ def _point_json(timestamp, point, start):
 
 def _crossing_json(crossing, now, point, start, aim):
     return {"x_m": round(crossing.x_m, 3), "height_m": round(crossing.height_m, 3),
+            "x_ft": round(crossing.x_m / 0.3048, 3), "height_ft": round(crossing.height_m / 0.3048, 3),
             "x_std_m": round(crossing.x_std_m, 3), "speed_mps": round(crossing.speed_mps, 2),
             "model": crossing.model, "samples_used": crossing.samples_used,
             "time_to_cross_s": round(crossing.time_s - now, 3),

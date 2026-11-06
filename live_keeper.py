@@ -83,6 +83,15 @@ from track_stereo import make_tracker
 STAGES = ("blur", "motion", "floor", "hough", "template", "checks", "classifier", "acquisition")
 
 
+FT_PER_M = 1 / 0.3048
+
+
+def m_ft(value, signed=True):
+    """'+1.52 m (+4.99 ft)': meters with feet alongside."""
+    return f"{value:+.2f} m ({value * FT_PER_M:+.2f} ft)" if signed else \
+        f"{value:.2f} m ({value * FT_PER_M:.2f} ft)"
+
+
 class ReplaySource:
     """A recorded packed stereo clip, read as fast as it is processed."""
 
@@ -193,8 +202,8 @@ class LiveKeeper:
                                  round(crossing.time_s - timestamp, 3)))
         if self.args.headless:
             print(f"  t {timestamp - session.start:6.3f} s  servo {details['servo_deg']:+6.1f} deg  "
-                  f"crossing x {details['x_m']:+.2f} m (±{details['x_std_m']:.2f}), "
-                  f"height {details['height_m']:+.2f} m, in {details['time_to_cross_s']:.3f} s",
+                  f"crossing x {m_ft(details['x_m'])} ±{m_ft(details['x_std_m'], False)}, "
+                  f"height {m_ft(details['height_m'])}, in {details['time_to_cross_s']:.3f} s",
                   flush=True)
         if self.servo:
             self.servo.move(details["servo_deg"])
@@ -262,10 +271,10 @@ class LiveKeeper:
         self.history.appendleft(summary)
         crossing = summary["crossing"]
         if crossing:
-            logging.info("Result (%s): crosses at x %+.2f m (±%.2f), height %+.2f m; "
-                         "%d measurements, last at z %.2f m", session.finished, crossing["x_m"],
-                         crossing["x_std_m"], crossing["height_m"], summary["measurements"],
-                         summary["last_measurement"]["z_m"])
+            logging.info("Result (%s): crosses at x %s ±%s, height %s; %d measurements, "
+                         "last at z %s", session.finished, m_ft(crossing["x_m"]),
+                         m_ft(crossing["x_std_m"], False), m_ft(crossing["height_m"]),
+                         summary["measurements"], m_ft(summary["last_measurement"]["z_m"], False))
         else:
             logging.info("Result (%s): no crossing predicted; %d measurements",
                          session.finished, summary["measurements"])
@@ -454,12 +463,13 @@ PAGE = """<!doctype html>
 <p class="muted">Positions are in metres from the midpoint between the two lenses: x is to the right as seen from the camera (negative = left), height is up, with 0 at the centre of a ball rolling on the ground (provisional calibration; a checkerboard calibration will make it relative to the cameras), and z is the perpendicular distance from the camera plane through both lenses. "Range" is the straight-line distance from that midpoint. The crossing is predicted: the ball leaves the view before it reaches the plane.</p>
 <script>
 const $ = id => document.getElementById(id);
-const m = v => v == null ? '–' : (v >= 0 ? '+' : '') + v.toFixed(2) + ' m';
+const m = v => v == null ? '–' : (v >= 0 ? '+' : '') + v.toFixed(2) + ' m (' + (v >= 0 ? '+' : '') + (v / 0.3048).toFixed(2) + ' ft)';
+const d = v => v.toFixed(2) + ' m (' + (v / 0.3048).toFixed(2) + ' ft)';
 function crossingText(c) {
   if (!c) return 'No crossing predicted.';
   return `<div class="big">x ${m(c.x_m)} (${c.x_m >= 0 ? 'right' : 'left'}), height ${m(c.height_m)}</div>
-   ±${c.x_std_m.toFixed(2)} m lateral · ${c.speed_mps.toFixed(1)} m/s · ${c.model} · servo ${c.servo_deg}° ·
-   from ${c.samples_used} samples, last at z ${c.made_at.z_m.toFixed(2)} m (range ${c.made_at.range_m.toFixed(2)} m),
+   ±${d(c.x_std_m)} lateral · ${c.speed_mps.toFixed(1)} m/s · ${c.model} · servo ${c.servo_deg}° ·
+   from ${c.samples_used} samples, last at z ${d(c.made_at.z_m)} (range ${d(c.made_at.range_m)}),
    ${c.time_to_cross_s.toFixed(2)} s before the predicted crossing`;
 }
 function stats(s) {
@@ -483,7 +493,7 @@ async function poll() {
   const sess = s.session;
   if (sess && s.state !== 'idle') {
     const p = sess.last_measurement;
-    $('live').innerHTML = (p ? `Latest ball position: x ${m(p.x_m)}, height ${m(p.height_m)}, z ${p.z_m.toFixed(2)} m (range ${p.range_m.toFixed(2)} m) · ${sess.measurements} measurements` : 'No 3D measurement yet') +
+    $('live').innerHTML = (p ? `Latest ball position: x ${m(p.x_m)}, height ${m(p.height_m)}, z ${d(p.z_m)} (range ${d(p.range_m)}) · ${sess.measurements} measurements` : 'No 3D measurement yet') +
       '<br>' + stats(s.stats) + (sess.crossing ? '<br>Current prediction: ' + crossingText(sess.crossing) : '');
   } else $('live').textContent = '';
   const last = s.history[0];
