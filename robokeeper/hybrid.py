@@ -416,7 +416,9 @@ class HybridBallSegmenter(AppearanceBallSegmenter):
             region = gray[y0:y1, x0:x1]
             shrink = min(1., TEMPLATE_MATCH_PX / (1.4*radius))
             if shrink < 1 and region.size:
-                region = cv2.resize(region, None, fx=shrink, fy=shrink, interpolation=cv2.INTER_AREA)
+                # A sliver at the image edge must not shrink to zero pixels.
+                size_xy = (max(1, round(region.shape[1] * shrink)), max(1, round(region.shape[0] * shrink)))
+                region = cv2.resize(region, size_xy, interpolation=cv2.INTER_AREA)
             for scale in (.85, 1., 1.15):
                 rr = radius * scale
                 size = max(5, round(1.4*rr*shrink))

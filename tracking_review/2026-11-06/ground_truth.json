@@ -1,0 +1,71 @@
+{
+  "note": "Measured crossing points for recordings/stereo/*_20261106_*. x from the midpoint between the cameras, negative = left; height = ball center above the floor (chip heights are rough estimates). The tracker's zero height is the ball resting on the floor, so tracker height = height_m - 0.11.",
+  "clips": {
+    "slow_ground_L_20261106_115139": {
+      "x_ft": -1.5,
+      "height_ft": 0.0,
+      "x_m": -0.457,
+      "height_m": 0.0
+    },
+    "slow_ground_R_20261106_115256": {
+      "x_ft": 4.5,
+      "height_ft": 0.0,
+      "x_m": 1.372,
+      "height_m": 0.0
+    },
+    "fast_ground_R_20261106_115340": {
+      "x_ft": 2.4,
+      "height_ft": 0.0,
+      "x_m": 0.732,
+      "height_m": 0.0
+    },
+    "fast_ground_L_20261106_115420": {
+      "x_ft": -4.0,
+      "height_ft": 0.0,
+      "x_m": -1.219,
+      "height_m": 0.0
+    },
+    "chip_L_20261106_115524": {
+      "x_ft": -1.0,
+      "height_ft": 3.5,
+      "x_m": -0.305,
+      "height_m": 1.067
+    },
+    "chip_C_20261106_115612": {
+      "x_ft": -2.0,
+      "height_ft": 3.75,
+      "x_m": -0.61,
+      "height_m": 1.143
+    },
+    "chip_R_20261106_115647": {
+      "x_ft": 2.0,
+      "height_ft": 1.5,
+      "x_m": 0.61,
+      "height_m": 0.457
+    },
+    "fast_shortexp_L_20261106_115829": {
+      "x_ft": -0.5,
+      "height_ft": 0.0,
+      "x_m": -0.152,
+      "height_m": 0.0
+    },
+    "fast_shortexp_R_20261106_115922": {
+      "x_ft": 2.2,
+      "height_ft": 0.0,
+      "x_m": 0.671,
+      "height_m": 0.0
+    },
+    "chip_shortexp_L_20261106_115958": {
+      "x_ft": -2.5,
+      "height_ft": 4.0,
+      "x_m": -0.762,
+      "height_m": 1.219
+    },
+    "chip_shortexp_R_20261106_120031": {
+      "x_ft": 2.2,
+      "height_ft": 2.5,
+      "x_m": 0.671,
+      "height_m": 0.762
+    }
+  }
+}

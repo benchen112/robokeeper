@@ -151,5 +151,16 @@ class HybridTests(unittest.TestCase):
         finally:
             cv2.HoughLinesP=lines
 
+    def test_large_ball_predicted_at_the_image_edge_does_not_crash(self):
+        # fast_shortexp_R 2026-11-06: a 1-2 px search sliver at the border
+        # shrank to zero pixels and cv2.resize raised.
+        segmenter=HybridBallSegmenter(verify_appearance=False)
+        frame=self.scene(300,25)
+        segmenter._gray=frame
+        segmenter._template=np.full((32,32),200,np.float32)
+        for x in (frame.shape[1]+128.5, -128.5):
+            segmenter.set_tracking_hint((x,100.),100.,30.)
+            self.assertEqual(segmenter._template_proposals(frame),[])
+
 if __name__=='__main__':
     unittest.main()
