@@ -24,6 +24,28 @@ class HybridTests(unittest.TestCase):
         return BallTracker(HybridBallSegmenter(auto_floor=False, verify_appearance=False), confirmation_hits=1,
                            adaptive_gate=True)
 
+    def test_tiled_fixed_camera_motion_matches_whole_frame_motion(self):
+        # The fixed-camera mask skips still tiles; it must equal the original
+        # whole-frame computation pixel for pixel, including the >20% reset.
+        rng = np.random.default_rng(3)
+        tiled = HybridBallSegmenter(fixed_camera=True)
+        whole = HybridBallSegmenter(fixed_camera=True)
+        base = cv2.GaussianBlur(rng.integers(40, 200, (200, 322), dtype=np.uint8), (9, 9), 0)
+        for i in range(40):
+            frame = base.copy()
+            if i == 25:
+                frame = 255 - frame  # Scene change.
+            frame = cv2.add(frame, 8 if i > 30 else 0)  # Lighting step.
+            cv2.circle(frame, (20 + 7 * i, 120 - i), 9, 230, -1)
+            noise = rng.normal(0, 3, frame.shape)
+            frame = np.clip(frame + noise, 0, 255).astype(np.uint8)
+            self.assertEqual(tiled._motion(frame), whole._motion_general(frame))
+            upsampled = cv2.resize(tiled.motion_mask, (322, 200), interpolation=cv2.INTER_NEAREST)
+            np.testing.assert_array_equal(upsampled, whole.motion_mask)
+            for x0, y0, x1, y1 in ((0, 0, 322, 200), (3, 7, 101, 99), (40, 81, 77, 150)):
+                self.assertEqual(tiled._mask_count(x0, y0, x1, y1), whole._mask_count(x0, y0, x1, y1))
+        self.assertGreater(cv2.countNonZero(whole.motion_mask), 0)
+
     def test_stationary_round_distractors_do_not_acquire(self):
         tracker = self.tracker()
         for i in range(15):

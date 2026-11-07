@@ -19,6 +19,19 @@ TEMPLATE_MATCH_PX = 24
 # Motion regions beyond these are skipped before Hough (see _hough_proposals).
 MAX_BALL_BLOB_PX = 700
 MAX_BALL_BLOB_ASPECT = 4.5
+# Fixed-camera motion is computed only in tiles (half-resolution pixels) where
+# the image changed recently; still scenes cost almost nothing.
+MOTION_TILE_PX = 16
+
+
+def _any_per_tile(image, tile):
+    """True per tile x tile block (edge blocks padded with zeros) holding a 255 pixel."""
+    h, w = image.shape
+    th, tw = -(-h // tile), -(-w // tile)
+    if (th * tile, tw * tile) != (h, w):
+        image = cv2.copyMakeBorder(image, 0, th * tile - h, 0, tw * tile - w, cv2.BORDER_CONSTANT)
+    # A block mean rounds 255 / tile**2 up to 1 (tile <= 22), so one 255 pixel counts.
+    return cv2.resize(image, (tw, th), interpolation=cv2.INTER_AREA) > 0
 
 
 @dataclass(frozen=True)
@@ -125,7 +138,11 @@ class HybridBallSegmenter(AppearanceBallSegmenter):
         self._previous = None
         self._background = None
         self._recent_motion = None
+        self._live_tiles = None
         self.motion_mask = None
+        self._motion_integral = None
+        self._mask_scale = 1
+        self._mask_shape = (0, 0)
         self.camera_transform = np.eye(3, dtype=np.float32)
         self.camera_motion_reliable = True
         self._last_motion_frame = 0
@@ -189,13 +206,19 @@ class HybridBallSegmenter(AppearanceBallSegmenter):
 
     def _motion(self, full):
         h, w = full.shape
+        if self.fixed_camera and self.motion_scale == .5 and h % 2 == 0 and w % 2 == 0:
+            return self._motion_fixed(full)
+        return self._motion_general(full)
+
+    def _motion_general(self, full):
+        h, w = full.shape
         gray = full if self.motion_scale == 1 else cv2.resize(
             full, None, fx=self.motion_scale, fy=self.motion_scale, interpolation=cv2.INTER_AREA)
         if self._previous is None:
             self._previous = gray.copy()
             self._background = gray.astype(np.float32)
             self._recent_motion = np.zeros(gray.shape, np.float32)
-            self.motion_mask = np.zeros(full.shape, np.uint8)
+            self._set_mask(np.zeros(full.shape, np.uint8), 1)
             return False
         size = (gray.shape[1], gray.shape[0])
         if self.fixed_camera:
@@ -244,21 +267,166 @@ class HybridBallSegmenter(AppearanceBallSegmenter):
         self._recent_motion = recent
         if mask.shape != full.shape:
             mask = cv2.resize(mask, (w, h), interpolation=cv2.INTER_NEAREST)
-        self.motion_mask = mask
-        self._motion_integral = cv2.integral((mask > 0).astype(np.uint8))
+        self._set_mask(mask, 1)
         return reliable and fraction <= .20
+
+    def _motion_fixed(self, full):
+        """The fixed-camera half-resolution mask of ``_motion_general``, pixel for
+        pixel, computed only where it can be non-zero.
+
+        The mask needs a short-term difference within the last few frames, so
+        tiles where nothing changed since then (a resting ball, an empty scene)
+        are skipped: a tile is processed when any pixel may pass the short-term
+        threshold now, or its decaying ``recent`` value can still exceed 45. The
+        mask stays at half resolution; ``_mask_count`` reads full-resolution
+        counts from its integral exactly.
+        """
+        gray = cv2.resize(full, None, fx=.5, fy=.5, interpolation=cv2.INTER_AREA)
+        if self._previous is None:
+            self._previous = gray.copy()
+            self._background = gray.astype(np.float32)
+            self._recent_motion = np.zeros(gray.shape, np.float32)
+            self._live_tiles = None
+            self._set_mask(np.zeros(gray.shape, np.uint8), 2)
+            return False
+        hh, ww = gray.shape
+        tile = MOTION_TILE_PX
+        th, tw = -(-hh // tile), -(-ww // tile)
+        if self._live_tiles is None or self._live_tiles.shape != (th, tw):
+            self._live_tiles = np.zeros((th, tw), bool)
+        previous, background, recent = self._previous, self._background, self._recent_motion
+        offset = float(np.median(gray[::8, ::8].astype(float) - previous[::8, ::8]))
+        sub = np.abs(gray[::8, ::8].astype(np.float32) - previous[::8, ::8].astype(np.float32) - offset)
+        noise = float(np.percentile(sub, 70))
+        threshold = max(self.difference_threshold, noise * 3)
+        # |gray - previous - offset| > threshold + edge noise (>= 0) needs
+        # |gray - previous| > threshold - |offset|: a superset, cheap in uint8.
+        floor_value = int(np.floor(threshold - abs(offset)))
+        change = cv2.absdiff(gray, previous)
+        if floor_value >= 0:
+            change = cv2.threshold(change, floor_value, 255, cv2.THRESH_BINARY)[1]
+        else:
+            change.fill(255)
+        active = _any_per_tile(change, tile) | self._live_tiles
+        rectangles = self._tile_rectangles(active, tile, hh, ww)
+        offset_bg = float(np.median(gray[::8, ::8].astype(float) - background[::8, ::8]))
+        background += offset_bg
+        raw = np.zeros(gray.shape, np.uint8)
+        changed = 0
+        for x0, y0, x1, y1 in rectangles:
+            # Sobel needs one neighbouring pixel; take it from the frame, as the
+            # whole-frame filter would, and keep only the rectangle.
+            ex0, ey0, ex1, ey1 = max(0, x0 - 1), max(0, y0 - 1), min(ww, x1 + 1), min(hh, y1 + 1)
+            around = previous[ey0:ey1, ex0:ex1]
+            inner = (slice(y0 - ey0, y1 - ey0), slice(x0 - ex0, x1 - ex0))
+            dx = cv2.Sobel(around, cv2.CV_32F, 1, 0)[inner]
+            dy = cv2.Sobel(around, cv2.CV_32F, 0, 1)[inner]
+            edge_noise = .125 * cv2.magnitude(dx, dy)
+            g = gray[y0:y1, x0:x1].astype(np.float32)
+            delta = np.abs(g - previous[y0:y1, x0:x1].astype(np.float32) - offset)
+            short = (delta > threshold + edge_noise).astype(np.uint8) * 255
+            changed += cv2.countNonZero(short)
+            part = np.maximum(recent[y0:y1, x0:x1] * .72, short.astype(np.float32))
+            recent[y0:y1, x0:x1] = part
+            foreground = np.abs(g - background[y0:y1, x0:x1]) > threshold
+            raw[y0:y1, x0:x1] = ((part > 45) & foreground).astype(np.uint8) * 255
+            # recent * .72 > 45 needs recent > 62.5: such tiles stay live.
+            live = _any_per_tile(cv2.threshold(part, 62, 255, cv2.THRESH_BINARY)[1].astype(np.uint8), tile)
+            self._live_tiles[y0 // tile:y0 // tile + live.shape[0], x0 // tile:x0 // tile + live.shape[1]] = live
+        fraction = changed / float(hh * ww)
+        mask = raw
+        if fraction > .20:
+            mask.fill(0)
+            background = gray.astype(np.float32)
+            recent.fill(0)
+            self._live_tiles.fill(False)
+        elif rectangles:
+            # Closing then opening reaches 4 pixels; beyond the rectangles the
+            # mask is zero, so filtering their bounding box is exact.
+            x0 = min(r[0] for r in rectangles); y0 = min(r[1] for r in rectangles)
+            x1 = max(r[2] for r in rectangles); y1 = max(r[3] for r in rectangles)
+            ex0, ey0, ex1, ey1 = max(0, x0 - 4), max(0, y0 - 4), min(ww, x1 + 4), min(hh, y1 + 4)
+            part = raw[ey0:ey1, ex0:ex1]
+            if cv2.countNonZero(part):
+                kernel = np.ones((3, 3), np.uint8)
+                part = cv2.morphologyEx(part, cv2.MORPH_CLOSE, kernel)
+                part = cv2.morphologyEx(part, cv2.MORPH_OPEN, kernel)
+                mask = np.zeros(gray.shape, np.uint8)
+                bx0, by0 = max(0, x0 - 1) - ex0, max(0, y0 - 1) - ey0
+                bx1, by1 = min(ww, x1 + 1) - ex0, min(hh, y1 + 1) - ey0
+                # Closing can add pixels one beyond the raw mask.
+                mask[ey0 + by0:ey0 + by1, ex0 + bx0:ex0 + bx1] = part[by0:by1, bx0:bx1]
+        if mask is raw and not changed:
+            cv2.accumulateWeighted(gray, background, .015)  # Empty mask: update everywhere.
+        else:
+            cv2.accumulateWeighted(gray, background, .015, mask=cv2.bitwise_not(mask))
+        self._previous = gray
+        self._background = background
+        self._recent_motion = recent
+        self._set_mask(mask, 2)
+        return fraction <= .20
+
+    @staticmethod
+    def _tile_rectangles(active, tile, h, w):
+        """Disjoint pixel rectangles covering the active tiles."""
+        if not active.any():
+            return []
+        count, _, stats, _ = cv2.connectedComponentsWithStats(active.view(np.uint8), connectivity=8)
+        boxes = [[x, y, x + bw, y + bh] for x, y, bw, bh, _ in stats[1:count]]
+        merged = True
+        while merged and len(boxes) > 1:
+            merged = False
+            for i in range(len(boxes)):
+                for j in range(i + 1, len(boxes)):
+                    a, b = boxes[i], boxes[j]
+                    if a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]:
+                        boxes[i] = [min(a[0], b[0]), min(a[1], b[1]), max(a[2], b[2]), max(a[3], b[3])]
+                        del boxes[j]
+                        merged = True
+                        break
+                if merged:
+                    break
+        return [(x0 * tile, y0 * tile, min(w, x1 * tile), min(h, y1 * tile)) for x0, y0, x1, y1 in boxes]
+
+    def _set_mask(self, mask, scale):
+        """``motion_mask`` at 1/``scale`` resolution; counts read through ``_mask_count``."""
+        self.motion_mask = mask
+        self._mask_scale = scale
+        self._mask_shape = (mask.shape[0] * scale, mask.shape[1] * scale)
+        self._motion_integral = (cv2.integral(cv2.bitwise_and(mask, 1))
+                                 if cv2.countNonZero(mask) else None)
+
+    def _mask_count(self, x0, y0, x1, y1):
+        """Motion pixels in a full-resolution rectangle, as if the mask were
+        upsampled (nearest) to full resolution."""
+        integral = self._motion_integral
+        if integral is None:
+            return 0.
+        if self._mask_scale == 1:
+            return float(integral[y1, x1] - integral[y0, x1] - integral[y1, x0] + integral[y0, x0])
+        def corner(y, x):
+            a, ry = divmod(y, 2)
+            b, rx = divmod(x, 2)
+            base = int(integral[a, b])
+            total = 4 * base
+            if ry:
+                total += 2 * (int(integral[a + 1, b]) - base)
+            if rx:
+                total += 2 * (int(integral[a, b + 1]) - base)
+            if ry and rx:
+                total += int(integral[a + 1, b + 1]) - int(integral[a + 1, b]) - int(integral[a, b + 1]) + base
+            return total
+        return float(corner(y1, x1) - corner(y0, x1) - corner(y1, x0) + corner(y0, x0))
 
     def _motion_support(self, x, y, radius, inner_fraction=0.0):
         # Integral rectangle/ring support bounds the cost even for large candidates.
-        h, w = self.motion_mask.shape
+        h, w = self._mask_shape
         def rectangle(r):
             x0, y0 = max(0, int(x-r)), max(0, int(y-r))
             x1, y1 = min(w, int(x+r+1)), min(h, int(y+r+1))
             if x1 <= x0 or y1 <= y0:
                 return 0., 0
-            integral = self._motion_integral
-            count = float(integral[y1,x1]-integral[y0,x1]-integral[y1,x0]+integral[y0,x0])
-            return count, (x1-x0)*(y1-y0)
+            return self._mask_count(x0, y0, x1, y1), (x1-x0)*(y1-y0)
         count, area = rectangle(radius)
         if inner_fraction:
             inner_count, inner_area = rectangle(radius*inner_fraction)
@@ -332,11 +500,12 @@ class HybridBallSegmenter(AppearanceBallSegmenter):
     def _hough_proposals(self, gray):
         h, w = gray.shape
         proposals = []
-        contours, _ = cv2.findContours(self.motion_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        contours = (cv2.findContours(self.motion_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0]
+                    if self._motion_integral is not None else ())
         regions = []
         for contour in contours:
-            x, y, bw, bh = cv2.boundingRect(contour)
-            if cv2.contourArea(contour) < 8 or max(bw, bh) < self.min_radius * 2:
+            x, y, bw, bh = (v * self._mask_scale for v in cv2.boundingRect(contour))
+            if self._contour_area(contour) < 8 or max(bw, bh) < self.min_radius * 2:
                 continue
             # A reflection can connect the ball to a tall foreground component.
             # Keep its upper portion instead of dropping the entire component.
@@ -351,10 +520,7 @@ class HybridBallSegmenter(AppearanceBallSegmenter):
                 continue
             pad = max(16, min(max(bw, bh) // 2, self.max_radius))
             regions.append((max(0, x - pad), max(0, y - pad), min(w, x + bw + pad), min(h, y + bh + pad)))
-        regions.sort(key=lambda box: -float(self._motion_integral[box[3],box[2]]
-                                           - self._motion_integral[box[1],box[2]]
-                                           - self._motion_integral[box[3],box[0]]
-                                           + self._motion_integral[box[1],box[0]]))
+        regions.sort(key=lambda box: -self._mask_count(*box))
         # Prioritize motion regions near the prediction; cap work during crowded scenes.
         if self._hint is not None:
             (cx, cy), radius, margin = self._hint
@@ -403,6 +569,23 @@ class HybridBallSegmenter(AppearanceBallSegmenter):
                                      for x,y,r in cs[0])
 
         return proposals
+
+    def _contour_area(self, contour):
+        """A mask contour's area as the full-resolution mask would give it, or a
+        lower bound of at least 8 (the only threshold it is compared with)."""
+        area = cv2.contourArea(contour)
+        if self._mask_scale == 1:
+            return area
+        # Upsampled 2x, a blob's contour area is at least 4x + 1 its area here;
+        # only small blobs, near the 8 px limit, need the exact value.
+        if 4 * area + 1 >= 8:
+            return 4 * area + 1
+        x, y, bw, bh = cv2.boundingRect(contour)
+        blob = np.zeros((bh + 2, bw + 2), np.uint8)
+        cv2.drawContours(blob, [contour], -1, 255, cv2.FILLED, offset=(1 - x, 1 - y))
+        blob = cv2.resize(blob, None, fx=2, fy=2, interpolation=cv2.INTER_NEAREST)
+        found = cv2.findContours(blob, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0]
+        return max((cv2.contourArea(c) for c in found), default=0.)
 
     def _template_proposals(self, gray):
         h, w = gray.shape
