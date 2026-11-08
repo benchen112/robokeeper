@@ -1,10 +1,10 @@
 {
   "focal_px": 1263.080341202505,
   "cx": 640.0,
-  "cy": 461.34076798536137,
+  "cy": 475.00541690651795,
   "baseline_m": 0.3,
-  "disparity_offset_px": 30.055611278443074,
-  "vertical_offset_px": -36.19407214198068,
+  "disparity_offset_px": 22.565062931979394,
+  "vertical_offset_px": -37.987608963814864,
   "image_size": [
     1280,
     800
@@ -12,6 +12,6 @@
   "method": "provisional_from_roll",
   "notes": "Eye order, offsets, horizon and camera height refit from a rolled ball (tools/calibrate_stereo.py roll); focal length and baseline kept from the previous calibration. Assumes parallel-ish cameras and no lens distortion; a checkerboard calibration is more accurate.",
   "rectification": null,
-  "camera_height_m": 0.07789869126926782,
+  "camera_height_m": 0.03563648927361929,
   "swap_eyes": true
 }
