@@ -13,6 +13,9 @@ Exposure is calibrated at startup exactly as live_keeper.py does it (same code
 and defaults), then locked, so a clip matches what live tracking would see.
 The chosen values are logged and saved in the clip's JSON; pass them back as
 --exposure-us/--gain to reuse them exactly.
+
+Clips are saved in recordings/stereo/<today>/, or with --test chips_left in
+recordings/stereo/<today>/<n>_chips_left/ (numbered in the order tests start).
 """
 
 import argparse
@@ -37,6 +40,7 @@ import numpy as np
 from record_camera import Handler, safe_name
 from robokeeper.exposure import (add_exposure_arguments, check_exposure_arguments,
                                  open_calibrated_camera)
+from robokeeper.run_folders import session_folder
 
 
 def encode(frame, quality):
@@ -217,7 +221,8 @@ class StereoRecorder:
 
     def __init__(self, camera, args):
         self.camera = camera
-        self.output_dir = args.output_dir
+        # recordings/stereo/<today>/ or recordings/stereo/<today>/<n>_<test>/
+        self.output_dir = session_folder(args.output_dir, getattr(args, "test", None))
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.preview_interval = 1 / args.preview_fps
         self.settings = {
@@ -455,7 +460,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("name", nargs="?", default="stereo",
                         help="Clip name for --duration mode (the browser page asks for one)")
-    parser.add_argument("--output-dir", type=Path, default=Path("recordings/stereo"))
+    parser.add_argument("--output-dir", type=Path, default=Path("recordings/stereo"),
+                        help="Clips go in <dir>/YYYY-MM-DD/[<n>_<test>/]")
+    parser.add_argument("--test", help="Name of this test (e.g. chips_left): clips go in "
+                                       "recordings/stereo/<today>/<n>_<test>/")
     parser.add_argument("--duration", type=float,
                         help="Record one clip of this many seconds without the browser, then exit")
     parser.add_argument("--countdown", type=float, default=0,

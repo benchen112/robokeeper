@@ -32,7 +32,12 @@ recording. Press Enter in the terminal to arm a kick (q + Enter to quit); every
 new prediction prints the servo angle and crossing point, and each result
 prints the per-pair processing times. Run files are still saved to --runs-dir.
 
-    python3 live_keeper.py --headless
+Runs are saved in runs/<today>/, or runs/<today>/<n>_<test>/ with --test. After
+a kick's result, type the measured crossing (feet) and Enter to label that run,
+e.g. "left1 x-4.5 h2.4" -> left1_x-4.5ft_height2.4ft__kick_....json (also
+stored in the file as "measured"); a plain Enter arms the next kick.
+
+    python3 live_keeper.py --headless --test chips_left
     python3 live_keeper.py --headless --servo   # also move the arm
 
 With the camera, a fan-header cooler (Pi 5 Active Cooler) runs at full speed
@@ -45,7 +50,7 @@ past --max-exposure-us) and keeps them for the whole run.
 
 Laptop replay of a recorded clip (arms on the first frame, prints the result):
 
-    python3 live_keeper.py --video recordings/stereo/kick_7m_20261006_161256.avi \
+    python3 live_keeper.py --video recordings/stereo/2026-10-06/rolls_from_known_distances/kick_7m_20261006_161256.avi \
         --autostart --no-serve
 """
 
@@ -71,6 +76,7 @@ from robokeeper.cooler import FanBoost, cpu_temp_c
 from robokeeper.exposure import (add_exposure_arguments, check_exposure_arguments,
                                  open_calibrated_camera)
 from robokeeper.live import KickSession
+from robokeeper.run_folders import labelled_path, parse_measurement, session_folder
 from robokeeper.servo import ServoArm, arm_angle_deg
 from robokeeper.stereo import PreviewBuffer, clip_swaps_eyes, split_stereo
 from record_stereo import StereoClip
@@ -154,6 +160,10 @@ class LiveKeeper:
         self.breakdown = []  # per processed pair: frame prep and per-eye stage ms
         self.exposures = []  # (exposure_us, analogue_gain) per processed pair
         self.clip = None
+        self.last_run = None  # path of the latest saved run, for labelling it
+        # Runs (and --record clips) of this session: <dir>/<today>[/<n>_<test>]/.
+        self.runs_folder = session_folder(args.runs_dir, args.test) if args.runs_dir else None
+        self.clips_folder = session_folder(args.record_dir, args.test)
         self.encode_pool = ThreadPoolExecutor(2) if args.record else None
         self.skipped = 0
         self.first_ts = self.last_ts = None
@@ -179,8 +189,8 @@ class LiveKeeper:
                     self.servo_timer.cancel()
                 self.servo.center()
             if self.args.record:
-                self.args.record_dir.mkdir(parents=True, exist_ok=True)
-                self.clip = StereoClip(self.args.record_dir, "kick", {
+                self.clips_folder.mkdir(parents=True, exist_ok=True)
+                self.clip = StereoClip(self.clips_folder, "kick", {
                     "requested_fps": self.args.fps, "jpeg_quality": self.args.record_quality,
                     "encoder_threads": 2, "keep_mjpg": False,
                     "frames": "only the pairs the live tracker processed, in order"},
@@ -303,12 +313,9 @@ class LiveKeeper:
                          stages["per_pair"]["frame_prep_ms_mean"],
                          "" if self.args.sequential_eyes else " + waiting for the slower eye",
                          stages["per_pair"]["threads_and_slower_eye_wait_ms_mean"])
-        if self.args.runs_dir:
-            # One folder per day (runs/2026-11-08/); sort into test folders afterwards.
-            now = datetime.now()
-            folder = self.args.runs_dir / f"{now:%Y-%m-%d}"
-            folder.mkdir(parents=True, exist_ok=True)
-            path = folder / f"kick_{now:%Y%m%d_%H%M%S}.json"
+        if self.runs_folder:
+            self.runs_folder.mkdir(parents=True, exist_ok=True)
+            path = self.runs_folder / f"kick_{datetime.now():%Y%m%d_%H%M%S}.json"
             # Write then rename, so Ctrl+C mid-save cannot leave an empty run file.
             partial = path.with_suffix(".json.partial")
             partial.write_text(json.dumps({**session.record(), "stats": summary["stats"],
@@ -320,7 +327,34 @@ class LiveKeeper:
                                            "exposure_us": [e for e, _ in self.exposures],
                                            "analogue_gain": [g for _, g in self.exposures]}) + "\n")
             partial.replace(path)
+            self.last_run = path
             logging.info("Saved %s", path)
+            if self.args.headless:
+                print("Type the measured crossing to label this run (e.g. left1 x-4.5 h2.4, feet), "
+                      "or press Enter to arm the next kick", flush=True)
+
+    def label_last_run(self, text):
+        """Rename the latest run to '<label>__kick_....json' and store the measurement in it."""
+        with self.lock:
+            if self.session and not self.session.finished:
+                return "Wait for this kick's result before labelling it"
+            path = self.last_run
+        if path is None or not path.exists():
+            return "No saved run to label yet"
+        try:
+            label, measured = parse_measurement(text)
+        except ValueError as exc:
+            return f"{exc}; use e.g. left1 x-4.5 h2.4 (feet)"
+        record = json.loads(path.read_text())
+        record["measured"] = measured
+        target = labelled_path(path, label)
+        partial = target.with_suffix(".json.partial")
+        partial.write_text(json.dumps(record) + "\n")
+        partial.replace(target)
+        if target != path:
+            path.unlink()
+        self.last_run = target
+        return f"Labelled {target}"
 
     @staticmethod
     def _finish_clip(clip, reason):
@@ -523,11 +557,16 @@ setInterval(poll, 300); poll();
 
 
 def arm_from_terminal(keeper):
-    """Headless control: Enter arms a kick, q + Enter quits."""
+    """Headless control: Enter arms a kick, q + Enter quits, any other text
+    labels the last saved run with its measured crossing (e.g. left1 x-4.5 h2.4)."""
     print("Press Enter to arm a kick (q + Enter to quit)", flush=True)
     for line in sys.stdin:
-        if line.strip().lower() in ("q", "quit", "exit"):
+        text = line.strip()
+        if text.lower() in ("q", "quit", "exit"):
             break
+        if text:
+            print(keeper.label_last_run(text), flush=True)
+            continue
         ok, message = keeper.start_kick()
         if not ok:
             print(message, flush=True)
@@ -598,7 +637,9 @@ def main():
     parser.add_argument("--max-wait-s", type=float, default=8.0,
                         help="End an armed kick with no predicted crossing after this long")
     parser.add_argument("--runs-dir", type=Path, default=Path("runs"),
-                        help="Save each kick as JSON in a dated folder here (runs/YYYY-MM-DD/)")
+                        help="Save each kick as JSON here, in runs/YYYY-MM-DD/[<n>_<test>/]")
+    parser.add_argument("--test",
+                        help="Name of this test (e.g. chips_left): runs go in runs/<today>/<n>_<test>/")
     parser.add_argument("--record", action="store_true",
                         help="Save each armed kick's processed frames as a replayable clip")
     parser.add_argument("--record-dir", type=Path, default=Path("recordings/live"))

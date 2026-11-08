@@ -1,71 +1,82 @@
 {
-  "note": "Measured crossing points for recordings/stereo/*_20261106_*. x from the midpoint between the cameras, negative = left; height = ball center above the floor (chip heights are rough estimates). The tracker's zero height is the ball resting on the floor, so tracker height = height_m - 0.11.",
+  "note": "Measured crossing points for the clips in recordings/stereo/2026-11-06/ (each entry's \"clip\"). x from the midpoint between the cameras, negative = left; height = ball center above the floor (chip heights are rough estimates). The tracker's zero height is the ball resting on the floor, so tracker height = height_m - 0.11.",
   "clips": {
     "slow_ground_L_20261106_115139": {
       "x_ft": -1.5,
       "height_ft": 0.0,
       "x_m": -0.457,
-      "height_m": 0.0
+      "height_m": 0.0,
+      "clip": "recordings/stereo/2026-11-06/1_ground_shots/x-1.5ft__slow_ground_L_20261106_115139.avi"
     },
     "slow_ground_R_20261106_115256": {
       "x_ft": 4.5,
       "height_ft": 0.0,
       "x_m": 1.372,
-      "height_m": 0.0
+      "height_m": 0.0,
+      "clip": "recordings/stereo/2026-11-06/1_ground_shots/x+4.5ft__slow_ground_R_20261106_115256.avi"
     },
     "fast_ground_R_20261106_115340": {
       "x_ft": 2.4,
       "height_ft": 0.0,
       "x_m": 0.732,
-      "height_m": 0.0
+      "height_m": 0.0,
+      "clip": "recordings/stereo/2026-11-06/1_ground_shots/x+2.4ft__fast_ground_R_20261106_115340.avi"
     },
     "fast_ground_L_20261106_115420": {
       "x_ft": -4.0,
       "height_ft": 0.0,
       "x_m": -1.219,
-      "height_m": 0.0
+      "height_m": 0.0,
+      "clip": "recordings/stereo/2026-11-06/1_ground_shots/x-4.0ft__fast_ground_L_20261106_115420.avi"
     },
     "chip_L_20261106_115524": {
       "x_ft": -1.0,
       "height_ft": 3.5,
       "x_m": -0.305,
-      "height_m": 1.067
+      "height_m": 1.067,
+      "clip": "recordings/stereo/2026-11-06/2_chips/x-1.0ft_height3.5ft__chip_L_20261106_115524.avi"
     },
     "chip_C_20261106_115612": {
       "x_ft": -2.0,
       "height_ft": 3.75,
       "x_m": -0.61,
-      "height_m": 1.143
+      "height_m": 1.143,
+      "clip": "recordings/stereo/2026-11-06/2_chips/x-2.0ft_height3.8ft__chip_C_20261106_115612.avi"
     },
     "chip_R_20261106_115647": {
       "x_ft": 2.0,
       "height_ft": 1.5,
       "x_m": 0.61,
-      "height_m": 0.457
+      "height_m": 0.457,
+      "clip": "recordings/stereo/2026-11-06/2_chips/x+2.0ft_height1.5ft__chip_R_20261106_115647.avi"
     },
     "fast_shortexp_L_20261106_115829": {
       "x_ft": -0.5,
       "height_ft": 0.0,
       "x_m": -0.152,
-      "height_m": 0.0
+      "height_m": 0.0,
+      "clip": "recordings/stereo/2026-11-06/1_ground_shots/x-0.5ft__fast_shortexp_L_20261106_115829.avi"
     },
     "fast_shortexp_R_20261106_115922": {
       "x_ft": 2.2,
       "height_ft": 0.0,
       "x_m": 0.671,
-      "height_m": 0.0
+      "height_m": 0.0,
+      "clip": "recordings/stereo/2026-11-06/1_ground_shots/x+2.2ft__fast_shortexp_R_20261106_115922.avi"
     },
     "chip_shortexp_L_20261106_115958": {
       "x_ft": -2.5,
       "height_ft": 4.0,
       "x_m": -0.762,
-      "height_m": 1.219
+      "height_m": 1.219,
+      "clip": "recordings/stereo/2026-11-06/2_chips/x-2.5ft_height4.0ft__chip_shortexp_L_20261106_115958.avi"
     },
     "chip_shortexp_R_20261106_120031": {
       "x_ft": 2.2,
       "height_ft": 2.5,
       "x_m": 0.671,
-      "height_m": 0.762
+      "height_m": 0.762,
+      "clip": "recordings/stereo/2026-11-06/2_chips/x+2.2ft_height2.5ft__chip_shortexp_R_20261106_120031.avi"
     }
   }
 }
