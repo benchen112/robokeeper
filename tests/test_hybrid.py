@@ -1,4 +1,5 @@
 import unittest
+from math import hypot
 import cv2
 import numpy as np
 
@@ -65,6 +66,48 @@ class HybridTests(unittest.TestCase):
                         self.assertLess(abs(result.center[0]-x),6)
                         self.assertLess(abs(result.center[1]-100),6)
                 self.assertGreater(len(observed),10)
+
+    def test_ball_first_seen_low_is_followed_above_the_acquisition_row(self):
+        # A chip: the ball rises past acquisition_min_row before it is accepted.
+        def run(min_row):
+            tracker = BallTracker(HybridBallSegmenter(auto_floor=False, verify_appearance=False,
+                                                      acquisition_min_row=min_row),
+                                  confirmation_hits=1, adaptive_gate=True)
+            rows = []
+            for i in range(24):
+                frame = self.scene()
+                y = 150 - 6 * i
+                cv2.circle(frame, (60 + i, y), 10, 230, -1)
+                cv2.circle(frame, (60 + i, y), 3, 25, -1)
+                result = tracker.process(frame, i / 60)
+                if result.observed:
+                    rows.append(result.center[1])
+            return rows
+        rows = run(min_row=140)
+        self.assertTrue(rows and min(rows) < 100, rows)
+        # A ball appearing high, never seen below the row, is still ignored.
+        tracker = BallTracker(HybridBallSegmenter(auto_floor=False, verify_appearance=False,
+                                                  acquisition_min_row=140),
+                              confirmation_hits=1, adaptive_gate=True)
+        for i in range(24):
+            frame = self.scene()
+            cv2.circle(frame, (60 + 4 * i, 60), 10, 230, -1)
+            cv2.circle(frame, (60 + 4 * i, 60), 3, 25, -1)
+            self.assertFalse(tracker.process(frame, i / 60).observed)
+
+    def test_blob_proposals_fit_the_ball_edge(self):
+        segmenter = HybridBallSegmenter(auto_floor=False, verify_appearance=False)
+        frame = np.full((200, 320), 90, np.uint8)
+        cv2.circle(frame, (150, 110), 20, 140, -1)
+        segmenter._gray = cv2.GaussianBlur(frame, (3, 3), 0)
+        # A motion blob a little off the ball (only part of it changed).
+        proposals = segmenter._blob_proposals([(134, 92, 30, 34)])
+        self.assertTrue(proposals)
+        x, y, r = proposals[0]
+        self.assertLess(hypot(x - 150, y - 110), 2)
+        self.assertLess(abs(r - 20), 2)
+        # Elongated blobs (a leg, a trail) propose nothing.
+        self.assertEqual(segmenter._blob_proposals([(100, 50, 20, 90)]), [])
 
     def test_global_translation_does_not_turn_stationary_objects_into_tracks(self):
         rng=np.random.default_rng(123)

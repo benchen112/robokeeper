@@ -141,7 +141,10 @@ class LiveKeeper:
         logging.info("New balls must be centered below row %s; track kept over gaps up to %.2f s",
                      min_row, args.max_gap_s)
         self.trackers = [make_tracker(options)[0] for _ in range(2)]
-        self.pool = ThreadPoolExecutor(2)
+        # Two threads track the eyes side by side; on the laptop the GIL made that
+        # slower than one eye after the other (--sequential-eyes), so compare both.
+        self.pool = ThreadPoolExecutor(1 if args.sequential_eyes else 2)
+        logging.info("Eyes tracked %s", "one after the other" if args.sequential_eyes else "in 2 threads")
         self.lock = threading.Lock()
         self.session = None
         self.history = deque(maxlen=10)
@@ -296,8 +299,9 @@ class LiveKeeper:
                                  f"{k} {m:.1f}/{p:.1f}" for k, (m, p) in group["ms_mean_p95"].items()
                                  if p >= .05))
         if stages:
-            logging.info("Per pair: frame prep %.1f ms, threads + waiting for the slower eye %.1f ms",
+            logging.info("Per pair: frame prep %.1f ms, thread overhead%s %.1f ms",
                          stages["per_pair"]["frame_prep_ms_mean"],
+                         "" if self.args.sequential_eyes else " + waiting for the slower eye",
                          stages["per_pair"]["threads_and_slower_eye_wait_ms_mean"])
         if self.args.runs_dir:
             self.args.runs_dir.mkdir(parents=True, exist_ok=True)
@@ -351,9 +355,12 @@ class LiveKeeper:
             stages["other"] = [round(float(other.mean()), 2), round(float(np.percentile(other, 95)), 2)]
             summary[label] = {"eye_frames": len(group), "ms_mean_p95": stages}
         prep = np.array([pair["prep"] for pair in self.breakdown])
-        wait = np.array([pair["pair"] - max(eye["ms"] for eye in pair["eyes"]) for pair in self.breakdown])
+        # Pair time beyond the eyes' own work: the slower eye in 2 threads, both in sequence.
+        combine = sum if self.args.sequential_eyes else max
+        wait = np.array([pair["pair"] - combine(eye["ms"] for eye in pair["eyes"]) for pair in self.breakdown])
         summary["per_pair"] = {"frame_prep_ms_mean": round(float(prep.mean()), 2),
-                               "threads_and_slower_eye_wait_ms_mean": round(float(wait.mean()), 2)}
+                               "threads_and_slower_eye_wait_ms_mean": round(float(wait.mean()), 2),
+                               "sequential_eyes": bool(self.args.sequential_eyes)}
         return summary
 
     def run(self):
@@ -617,6 +624,8 @@ def main():
     parser.add_argument("--armed-preview-fps", type=float, default=3,
                         help="Preview rate while tracking (0 = off, frees CPU for tracking)")
     parser.add_argument("--opencv-threads", type=int, default=2)
+    parser.add_argument("--sequential-eyes", action="store_true",
+                        help="Track the two eyes one after the other instead of in 2 threads")
     parser.add_argument("--no-fan", action="store_true",
                         help="Leave the cooler under the kernel's temperature control")
     args = parser.parse_args()

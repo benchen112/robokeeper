@@ -19,6 +19,18 @@ TEMPLATE_MATCH_PX = 24
 # Motion regions beyond these are skipped before Hough (see _hough_proposals).
 MAX_BALL_BLOB_PX = 700
 MAX_BALL_BLOB_ASPECT = 4.5
+# Motion blobs this compact (long side / short side) also propose circles of
+# their own (see _blob_proposals), the largest few by motion.
+BLOB_PROPOSAL_ASPECT = 2.0
+BLOB_PROPOSAL_COUNT = 4
+# Classifier margin a blob circle needs to start a track (shoes scored -0.9..-0.2).
+BLOB_MIN_MARGIN = 0.
+# A proposal followed before acquisition survives this many frames without a
+# match (detections of a hard-to-see ball come a few frames apart).
+TRACKLET_MAX_MISSES = 3
+# A followed proposal may continue above acquisition_min_row (a rising chip)
+# within this distance (pixels, or 2.5 radii) of where it is expected.
+RISING_GATE_PX = 40
 # Fixed-camera motion is computed only in tiles (half-resolution pixels) where
 # the image changed recently; still scenes cost almost nothing.
 MOTION_TILE_PX = 16
@@ -151,6 +163,8 @@ class HybridBallSegmenter(AppearanceBallSegmenter):
         self._observed_radii = deque(maxlen=2)
         self._memory_active = False
         self._tracklets = []
+        self._followed = []
+        self._blob_circles = set()
         self.raw_candidates = ()
         self.acquisition_candidates = ()
         self.ready = False
@@ -470,6 +484,8 @@ class HybridBallSegmenter(AppearanceBallSegmenter):
         self.raw_candidates = ()
         self.acquisition_candidates = ()
         self.template_only = False
+        self._blob_circles = set()
+        self._followed = self._tracklet_predictions()
         if not self.ready or not valid_motion:
             self._tracklets.clear()
             return ()
@@ -503,6 +519,7 @@ class HybridBallSegmenter(AppearanceBallSegmenter):
         contours = (cv2.findContours(self.motion_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0]
                     if self._motion_integral is not None else ())
         regions = []
+        blobs = []
         for contour in contours:
             x, y, bw, bh = (v * self._mask_scale for v in cv2.boundingRect(contour))
             if self._contour_area(contour) < 8 or max(bw, bh) < self.min_radius * 2:
@@ -520,6 +537,7 @@ class HybridBallSegmenter(AppearanceBallSegmenter):
                 continue
             pad = max(16, min(max(bw, bh) // 2, self.max_radius))
             regions.append((max(0, x - pad), max(0, y - pad), min(w, x + bw + pad), min(h, y + bh + pad)))
+            blobs.append((x, y, bw, bh))
         regions.sort(key=lambda box: -self._mask_count(*box))
         # Prioritize motion regions near the prediction; cap work during crowded scenes.
         if self._hint is not None:
@@ -532,7 +550,9 @@ class HybridBallSegmenter(AppearanceBallSegmenter):
             if self._hint is None and self.acquisition_min_row is not None:
                 # Search only where an acquirable circle's edges can be; this also
                 # skips most of a moving person, the slowest Hough regions.
-                y0 = max(y0, int(self.acquisition_min_row) - 60)
+                if not any(x0 <= px <= x1 and py - pr <= y1 and py + pr >= y0 - RISING_GATE_PX
+                           and py < self.acquisition_min_row for px, py, pr in self._followed):
+                    y0 = max(y0, int(self.acquisition_min_row) - 60)
             if min(x1-x0, y1-y0) < self.min_radius*2:
                 continue
             region = gray[y0:y1, x0:x1]
@@ -568,8 +588,34 @@ class HybridBallSegmenter(AppearanceBallSegmenter):
                     proposals.extend((float(x/scale+x0-left_pad), float(y/scale+y0), float(r/scale))
                                      for x,y,r in cs[0])
 
-        return proposals
+        # Hough misses low-contrast or blurred balls whose motion blob is plain
+        # (a grey ball on a grey floor). Fit circles to compact blobs too; they
+        # pass the same checks, classifier included, after Hough's circles.
+        blobs.sort(key=lambda b: -self._mask_count(b[0], b[1], b[0]+b[2], b[1]+b[3]))
+        from_blobs = self._blob_proposals(blobs[:BLOB_PROPOSAL_COUNT])
+        self._blob_circles.update(from_blobs)
+        return proposals + from_blobs
 
+    def _blob_proposals(self, blobs):
+        """Circles fitted to the strongest edges around compact motion blobs
+        (x, y, w, h), from the box's circle as a starting guess."""
+        proposals = []
+        for x, y, bw, bh in blobs:
+            if max(bw, bh) > BLOB_PROPOSAL_ASPECT * min(bw, bh) or min(bw, bh) < self.min_radius * 2:
+                continue
+            cx, cy, radius = x + bw / 2, y + bh / 2, (bw + bh) / 4
+            if radius > self.max_radius:
+                continue
+            if self._hint is not None:
+                # While a ball is followed, only blobs near it matter.
+                (hx, hy), hint_radius, margin = self._hint
+                if hypot(cx - hx, cy - hy) > hint_radius + margin:
+                    continue
+            # The fit searches 0.7-1.4x the guess, covering the box's short and long sides.
+            fitted = self._fit_circle(cx, cy, radius)
+            if fitted:
+                proposals.append(fitted)
+        return proposals
     def _contour_area(self, contour):
         """A mask contour's area as the full-resolution mask would give it, or a
         lower bound of at least 8 (the only threshold it is compared with)."""
@@ -686,7 +732,8 @@ class HybridBallSegmenter(AppearanceBallSegmenter):
                 continue
             if any(hypot(x-c.center[0],y-c.center[1])<max(4,radius*.3) for c in candidates):
                 continue
-            if self._hint is None and self.acquisition_min_row is not None and y < self.acquisition_min_row:
+            if (self._hint is None and self.acquisition_min_row is not None and y < self.acquisition_min_row
+                    and not self._continues_tracklet(x, y, radius)):
                 continue
             # A ball coming at the camera grows fast between sparse frames; shrinking
             # (a smaller object taking over) stays tightly limited.
@@ -734,6 +781,10 @@ class HybridBallSegmenter(AppearanceBallSegmenter):
                            and floor.confidence > .35 and (y+radius)/h < floor.boundary_y-.05)
             if self._hint is None and (radius < 10 or above_floor):
                 margin_threshold = max(margin_threshold, .60)
+            if self._hint is None and (x, y, radius) in self._blob_circles:
+                # Hough found no circle here: a moving shoe's blob fits a circle
+                # too, so a new ball from a blob needs the classifier to agree.
+                margin_threshold = max(margin_threshold, BLOB_MIN_MARGIN)
             if self.verifier and appearance_margin < margin_threshold:
                 continue
             score=.50*support+.35*min(1.,motion*radius/3.)+.15*max(0.,similarity)
@@ -752,6 +803,22 @@ class HybridBallSegmenter(AppearanceBallSegmenter):
             if ex>bx and ey>by:
                 candidates.append(BallCandidate((x,y),radius,min(1.,score),(bx,by,ex-bx,ey-by)))
         return candidates
+
+    def _tracklet_predictions(self):
+        """(x, y, radius) where each followed, not yet accepted proposal should be now."""
+        now, predictions = self._timestamp, []
+        for track in self._tracklets:
+            (x, y), velocity = track["position"], track["velocity"]
+            if velocity is not None and now is not None and track["time"] is not None:
+                x, y = x + velocity[0]*(now-track["time"]), y + velocity[1]*(now-track["time"])
+            predictions.append((x, y, track["radius"]))
+        return predictions
+
+    def _continues_tracklet(self, x, y, radius):
+        """Near where a followed proposal is expected: a ball first seen low
+        that has since risen above ``acquisition_min_row`` (a chip)."""
+        return any(hypot(x-px, y-py) < max(RISING_GATE_PX, 2.5*pr) and .5 < radius/pr < 2.
+                   for px, py, pr in self._followed)
 
     def _coherent_acquisition(self, candidates):
         """Follow competing proposals before committing; reject stationary flicker."""
@@ -819,10 +886,10 @@ class HybridBallSegmenter(AppearanceBallSegmenter):
                                   and candidate.confidence > .75)
                     if translating or expanding or remembered:
                         accepted.append(candidate)
-            else:
+            elif self.acquisition_min_row is None or y >= self.acquisition_min_row:
                 self._tracklets.append(dict(position=candidate.center, radius=candidate.radius,
                                             history=deque([(self._frames,candidate.center,candidate.radius)],maxlen=5),
                                             misses=0, time=now, velocity=None))
                 used.add(len(self._tracklets)-1)
-        self._tracklets = [track for track in self._tracklets if track["misses"] < 3][-60:]
+        self._tracklets = [track for track in self._tracklets if track["misses"] <= TRACKLET_MAX_MISSES][-60:]
         return tuple(accepted)
