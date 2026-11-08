@@ -304,8 +304,11 @@ class LiveKeeper:
                          "" if self.args.sequential_eyes else " + waiting for the slower eye",
                          stages["per_pair"]["threads_and_slower_eye_wait_ms_mean"])
         if self.args.runs_dir:
-            self.args.runs_dir.mkdir(parents=True, exist_ok=True)
-            path = self.args.runs_dir / f"kick_{datetime.now():%Y%m%d_%H%M%S}.json"
+            # One folder per day (runs/2026-11-08/); sort into test folders afterwards.
+            now = datetime.now()
+            folder = self.args.runs_dir / f"{now:%Y-%m-%d}"
+            folder.mkdir(parents=True, exist_ok=True)
+            path = folder / f"kick_{now:%Y%m%d_%H%M%S}.json"
             # Write then rename, so Ctrl+C mid-save cannot leave an empty run file.
             partial = path.with_suffix(".json.partial")
             partial.write_text(json.dumps({**session.record(), "stats": summary["stats"],
@@ -595,7 +598,7 @@ def main():
     parser.add_argument("--max-wait-s", type=float, default=8.0,
                         help="End an armed kick with no predicted crossing after this long")
     parser.add_argument("--runs-dir", type=Path, default=Path("runs"),
-                        help="Save each kick here as JSON")
+                        help="Save each kick as JSON in a dated folder here (runs/YYYY-MM-DD/)")
     parser.add_argument("--record", action="store_true",
                         help="Save each armed kick's processed frames as a replayable clip")
     parser.add_argument("--record-dir", type=Path, default=Path("recordings/live"))
