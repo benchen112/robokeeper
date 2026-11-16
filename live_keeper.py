@@ -45,8 +45,10 @@ for as long as this runs, then goes back to temperature control (--no-fan to
 leave it alone).
 
 Exposure: without --exposure-us, a short calibration at startup picks a fixed
-exposure and gain for --target-brightness (shortest exposure first, gain only
-past --max-exposure-us) and keeps them for the whole run.
+exposure and gain for --target-brightness, metered on the lower 60% of the
+image where the ball is (--meter-rows): exposure up to --blur-limit-us
+(1000), then gain up to 16, then exposure up to --max-exposure-us. The
+settings are kept for the whole run.
 
 Laptop replay of a recorded clip (arms on the first frame, prints the result):
 

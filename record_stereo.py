@@ -231,6 +231,8 @@ class StereoRecorder:
             "requested_fps": args.fps, "jpeg_quality": args.quality,
             "requested_exposure_us": args.exposure_us,
             "requested_gain": args.gain if args.exposure_us else None,
+            "meter_rows": list(getattr(args, "meter_rows", (0., 1.))),
+            "blur_limit_us": getattr(args, "blur_limit_us", None),
             "encoder_threads": args.encoder_threads, "keep_mjpg": args.keep_mjpg,
             "swap_eyes": args.swap_eyes,
         }
@@ -488,7 +490,8 @@ def main():
     parser.add_argument("--keep-mjpg", action="store_true", help="Keep the raw JPEG stream")
     args = parser.parse_args()
     for name in ("eye_width", "eye_height", "fps", "preview_fps", "encoder_threads",
-                 "duration", "exposure_us", "gain", "max_exposure_us", "target_brightness"):
+                 "duration", "exposure_us", "gain", "max_exposure_us", "blur_limit_us",
+                 "target_brightness"):
         value = getattr(args, name)
         if value is not None and (not math.isfinite(value) or value <= 0):
             parser.error(f"--{name.replace('_', '-')} must be positive and finite")
