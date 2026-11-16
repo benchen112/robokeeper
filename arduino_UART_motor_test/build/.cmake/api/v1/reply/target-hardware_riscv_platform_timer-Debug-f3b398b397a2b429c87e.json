@@ -1,0 +1,70 @@
+{
+	"abstract" : true,
+	"backtrace" : 2,
+	"backtraceGraph" : 
+	{
+		"commands" : 
+		[
+			"add_library",
+			"pico_simple_hardware_headers_only_target",
+			"target_link_libraries"
+		],
+		"files" : 
+		[
+			"/Users/lucamelfi/.pico-sdk/sdk/2.3.1/src/CMakeLists.txt",
+			"/Users/lucamelfi/.pico-sdk/sdk/2.3.1/src/rp2_common/hardware_riscv_platform_timer/CMakeLists.txt"
+		],
+		"nodes" : 
+		[
+			{
+				"file" : 1
+			},
+			{
+				"command" : 1,
+				"file" : 1,
+				"line" : 1,
+				"parent" : 0
+			},
+			{
+				"command" : 0,
+				"file" : 0,
+				"line" : 148,
+				"parent" : 1
+			},
+			{
+				"command" : 2,
+				"file" : 0,
+				"line" : 149,
+				"parent" : 1
+			}
+		]
+	},
+	"codemodelVersion" : 
+	{
+		"major" : 2,
+		"minor" : 10
+	},
+	"id" : "hardware_riscv_platform_timer::@2248831e18f80a59e5e7",
+	"interfaceCompileDependencies" : 
+	[
+		{
+			"backtrace" : 3,
+			"id" : "hardware_riscv_platform_timer_headers::@2248831e18f80a59e5e7"
+		}
+	],
+	"interfaceLinkLibraries" : 
+	[
+		{
+			"backtrace" : 3,
+			"id" : "hardware_riscv_platform_timer_headers::@2248831e18f80a59e5e7"
+		}
+	],
+	"name" : "hardware_riscv_platform_timer",
+	"paths" : 
+	{
+		"build" : "pico-sdk/src/rp2_common/hardware_riscv_platform_timer",
+		"source" : "/Users/lucamelfi/.pico-sdk/sdk/2.3.1/src/rp2_common/hardware_riscv_platform_timer"
+	},
+	"sources" : [],
+	"type" : "INTERFACE_LIBRARY"
+}

@@ -1,0 +1,136 @@
+{
+	"abstract" : true,
+	"backtrace" : 3,
+	"backtraceGraph" : 
+	{
+		"commands" : 
+		[
+			"add_library",
+			"pico_add_impl_library",
+			"pico_add_library",
+			"target_link_libraries"
+		],
+		"files" : 
+		[
+			"/Users/lucamelfi/.pico-sdk/sdk/2.3.1/src/CMakeLists.txt",
+			"/Users/lucamelfi/.pico-sdk/sdk/2.3.1/src/rp2_common/pico_double/CMakeLists.txt"
+		],
+		"nodes" : 
+		[
+			{
+				"file" : 1
+			},
+			{
+				"command" : 2,
+				"file" : 1,
+				"line" : 116,
+				"parent" : 0
+			},
+			{
+				"command" : 1,
+				"file" : 0,
+				"line" : 112,
+				"parent" : 1
+			},
+			{
+				"command" : 0,
+				"file" : 0,
+				"line" : 96,
+				"parent" : 2
+			},
+			{
+				"command" : 3,
+				"file" : 0,
+				"line" : 105,
+				"parent" : 2
+			},
+			{
+				"command" : 3,
+				"file" : 1,
+				"line" : 124,
+				"parent" : 0
+			}
+		]
+	},
+	"codemodelVersion" : 
+	{
+		"major" : 2,
+		"minor" : 10
+	},
+	"id" : "pico_double_pico_dcp::@ab259a064a43323d6260",
+	"interfaceCompileDependencies" : 
+	[
+		{
+			"backtrace" : 4,
+			"id" : "pico_double_pico_dcp_headers::@ab259a064a43323d6260"
+		},
+		{
+			"backtrace" : 5,
+			"id" : "pico_double_headers::@ab259a064a43323d6260"
+		}
+	],
+	"interfaceLinkLibraries" : 
+	[
+		{
+			"backtrace" : 4,
+			"id" : "pico_double_pico_dcp_headers::@ab259a064a43323d6260"
+		},
+		{
+			"backtrace" : 5,
+			"id" : "pico_double_headers::@ab259a064a43323d6260"
+		}
+	],
+	"interfaceSources" : 
+	[
+		{
+			"path" : "/Users/lucamelfi/.pico-sdk/sdk/2.3.1/src/rp2_common/pico_double/double_math.c",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"path" : "/Users/lucamelfi/.pico-sdk/sdk/2.3.1/src/rp2_common/pico_double/double_aeabi_dcp.S",
+			"sourceGroupIndex" : 1
+		},
+		{
+			"path" : "/Users/lucamelfi/.pico-sdk/sdk/2.3.1/src/rp2_common/pico_double/double_fma_dcp.S",
+			"sourceGroupIndex" : 1
+		},
+		{
+			"path" : "/Users/lucamelfi/.pico-sdk/sdk/2.3.1/src/rp2_common/pico_double/double_sci_m33.S",
+			"sourceGroupIndex" : 1
+		},
+		{
+			"path" : "/Users/lucamelfi/.pico-sdk/sdk/2.3.1/src/rp2_common/pico_double/double_conv_m33.S",
+			"sourceGroupIndex" : 1
+		}
+	],
+	"name" : "pico_double_pico_dcp",
+	"paths" : 
+	{
+		"build" : "pico-sdk/src/rp2_common/pico_double",
+		"source" : "/Users/lucamelfi/.pico-sdk/sdk/2.3.1/src/rp2_common/pico_double"
+	},
+	"sourceGroups" : 
+	[
+		{
+			"interfaceSourceIndexes" : 
+			[
+				0
+			],
+			"name" : "Source Files",
+			"sourceIndexes" : []
+		},
+		{
+			"interfaceSourceIndexes" : 
+			[
+				1,
+				2,
+				3,
+				4
+			],
+			"name" : "",
+			"sourceIndexes" : []
+		}
+	],
+	"sources" : [],
+	"type" : "INTERFACE_LIBRARY"
+}
