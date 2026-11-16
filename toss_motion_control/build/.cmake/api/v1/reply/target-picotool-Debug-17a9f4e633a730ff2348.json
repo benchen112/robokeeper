@@ -1,0 +1,97 @@
+{
+	"abstract" : true,
+	"artifacts" : 
+	[
+		{
+			"path" : "/Users/lucamelfi/.pico-sdk/picotool/2.3.1/picotool/picotool"
+		}
+	],
+	"backtrace" : 8,
+	"backtraceGraph" : 
+	{
+		"commands" : 
+		[
+			"add_executable",
+			"include",
+			"find_package",
+			"pico_init_picotool",
+			"pico_add_dis_output",
+			"pico_define_boot_stage2"
+		],
+		"files" : 
+		[
+			"/Users/lucamelfi/.pico-sdk/picotool/2.3.1/picotool/picotoolTargets.cmake",
+			"/Users/lucamelfi/.pico-sdk/picotool/2.3.1/picotool/picotoolConfig.cmake",
+			"/Users/lucamelfi/.pico-sdk/sdk/2.3.1/tools/CMakeLists.txt",
+			"/Users/lucamelfi/.pico-sdk/sdk/2.3.1/src/cmake/on_device.cmake",
+			"/Users/lucamelfi/.pico-sdk/sdk/2.3.1/src/rp2350/boot_stage2/CMakeLists.txt"
+		],
+		"nodes" : 
+		[
+			{
+				"file" : 4
+			},
+			{
+				"command" : 5,
+				"file" : 4,
+				"line" : 103,
+				"parent" : 0
+			},
+			{
+				"command" : 4,
+				"file" : 4,
+				"line" : 62,
+				"parent" : 1
+			},
+			{
+				"command" : 3,
+				"file" : 3,
+				"line" : 54,
+				"parent" : 2
+			},
+			{
+				"command" : 2,
+				"file" : 2,
+				"line" : 165,
+				"parent" : 3
+			},
+			{
+				"file" : 1,
+				"parent" : 4
+			},
+			{
+				"command" : 1,
+				"file" : 1,
+				"line" : 2,
+				"parent" : 5
+			},
+			{
+				"file" : 0,
+				"parent" : 6
+			},
+			{
+				"command" : 0,
+				"file" : 0,
+				"line" : 57,
+				"parent" : 7
+			}
+		]
+	},
+	"codemodelVersion" : 
+	{
+		"major" : 2,
+		"minor" : 10
+	},
+	"id" : "picotool::@9e89cb6b53d747b62405",
+	"imported" : true,
+	"local" : true,
+	"name" : "picotool",
+	"nameOnDisk" : "picotool",
+	"paths" : 
+	{
+		"build" : "pico-sdk/src/rp2350/boot_stage2",
+		"source" : "/Users/lucamelfi/.pico-sdk/sdk/2.3.1/src/rp2350/boot_stage2"
+	},
+	"sources" : [],
+	"type" : "EXECUTABLE"
+}

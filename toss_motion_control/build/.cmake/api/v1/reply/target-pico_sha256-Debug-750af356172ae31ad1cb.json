@@ -1,0 +1,158 @@
+{
+	"abstract" : true,
+	"backtrace" : 3,
+	"backtraceGraph" : 
+	{
+		"commands" : 
+		[
+			"add_library",
+			"pico_add_impl_library",
+			"pico_add_library",
+			"target_link_libraries",
+			"pico_mirrored_target_link_libraries"
+		],
+		"files" : 
+		[
+			"/Users/lucamelfi/.pico-sdk/sdk/2.3.1/src/CMakeLists.txt",
+			"/Users/lucamelfi/.pico-sdk/sdk/2.3.1/src/rp2_common/pico_sha256/CMakeLists.txt"
+		],
+		"nodes" : 
+		[
+			{
+				"file" : 1
+			},
+			{
+				"command" : 2,
+				"file" : 1,
+				"line" : 5,
+				"parent" : 0
+			},
+			{
+				"command" : 1,
+				"file" : 0,
+				"line" : 112,
+				"parent" : 1
+			},
+			{
+				"command" : 0,
+				"file" : 0,
+				"line" : 96,
+				"parent" : 2
+			},
+			{
+				"command" : 3,
+				"file" : 0,
+				"line" : 105,
+				"parent" : 2
+			},
+			{
+				"command" : 4,
+				"file" : 1,
+				"line" : 15,
+				"parent" : 0
+			},
+			{
+				"command" : 3,
+				"file" : 0,
+				"line" : 56,
+				"parent" : 5
+			},
+			{
+				"command" : 3,
+				"file" : 0,
+				"line" : 66,
+				"parent" : 5
+			},
+			{
+				"command" : 3,
+				"file" : 0,
+				"line" : 66,
+				"parent" : 5
+			},
+			{
+				"command" : 3,
+				"file" : 0,
+				"line" : 66,
+				"parent" : 5
+			}
+		]
+	},
+	"codemodelVersion" : 
+	{
+		"major" : 2,
+		"minor" : 10
+	},
+	"id" : "pico_sha256::@d07edaf9187c1796fd53",
+	"interfaceCompileDependencies" : 
+	[
+		{
+			"backtrace" : 4,
+			"id" : "pico_sha256_headers::@d07edaf9187c1796fd53"
+		},
+		{
+			"backtrace" : 6,
+			"id" : "pico_sha256_headers::@d07edaf9187c1796fd53"
+		},
+		{
+			"backtrace" : 7,
+			"id" : "hardware_dma::@0fb4e5fe7d96da9dd1e8"
+		},
+		{
+			"backtrace" : 8,
+			"id" : "hardware_sha256::@67a463d7be3e9097618c"
+		},
+		{
+			"backtrace" : 9,
+			"id" : "pico_sync::@04b15b98fcb37c7b0422"
+		}
+	],
+	"interfaceLinkLibraries" : 
+	[
+		{
+			"backtrace" : 4,
+			"id" : "pico_sha256_headers::@d07edaf9187c1796fd53"
+		},
+		{
+			"backtrace" : 6,
+			"id" : "pico_sha256_headers::@d07edaf9187c1796fd53"
+		},
+		{
+			"backtrace" : 7,
+			"id" : "hardware_dma::@0fb4e5fe7d96da9dd1e8"
+		},
+		{
+			"backtrace" : 8,
+			"id" : "hardware_sha256::@67a463d7be3e9097618c"
+		},
+		{
+			"backtrace" : 9,
+			"id" : "pico_sync::@04b15b98fcb37c7b0422"
+		}
+	],
+	"interfaceSources" : 
+	[
+		{
+			"path" : "/Users/lucamelfi/.pico-sdk/sdk/2.3.1/src/rp2_common/pico_sha256/sha256.c",
+			"sourceGroupIndex" : 0
+		}
+	],
+	"name" : "pico_sha256",
+	"paths" : 
+	{
+		"build" : "pico-sdk/src/rp2_common/pico_sha256",
+		"source" : "/Users/lucamelfi/.pico-sdk/sdk/2.3.1/src/rp2_common/pico_sha256"
+	},
+	"sourceGroups" : 
+	[
+		{
+			"interfaceSourceIndexes" : 
+			[
+				0
+			],
+			"name" : "Source Files",
+			"sourceIndexes" : []
+		}
+	],
+	"sources" : [],
+	"type" : "INTERFACE_LIBRARY"
+}
